@@ -1,26 +1,153 @@
 @import "tailwindcss";
 
+/*
+  Design tokens — CME OI SYSTEM
+  แบรนด์เดิมของลูกค้าเป็นน้ำเงินกรมท่า + ทอง (ดูสื่อการตลาด)
+  เว็บใช้โทนเดียวกันแต่สงบกว่า: ส่วนมืด = "หน้าจอเทรด", ส่วนสว่าง = คำอธิบาย
+*/
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --ink: #0e1f3d; /* กรมท่าหลัก (hero, footer) */
+  --ink-deep: #0a1730; /* แผงข้อมูลบนพื้นมืด */
+  --ink-line: #233a66; /* เส้นบนพื้นมืด */
+  --paper: #f4f5f8; /* พื้นส่วนสว่าง */
+  --surface: #ffffff;
+  --text: #172033;
+  --text-muted: #5b6577;
+  --text-on-ink: #e9edf5;
+  --text-on-ink-muted: #a7b3c9;
+  --rule: #d9dde6;
+  --gold: #c9a227; /* ปุ่มหลักและจุดเน้น ใช้น้อยที่สุด */
+  --gold-deep: #9d7d15;
+  --gold-soft: #fbf4dc;
+  --link: #2f4c8a;
+  --call: #22a06b; /* สีความหมาย: ฝั่งซื้อ/CALL */
+  --put: #d64545; /* สีความหมาย: ฝั่งขาย/PUT */
+  --focus: #2f4c8a;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-ink: var(--ink);
+  --color-ink-deep: var(--ink-deep);
+  --color-ink-line: var(--ink-line);
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-on-ink: var(--text-on-ink);
+  --color-on-ink-muted: var(--text-on-ink-muted);
+  --color-rule: var(--rule);
+  --color-gold: var(--gold);
+  --color-gold-deep: var(--gold-deep);
+  --color-gold-soft: var(--gold-soft);
+  --color-link: var(--link);
+  --color-call: var(--call);
+  --color-put: var(--put);
+  --font-sans:
+    "IBM Plex Sans Thai", "Noto Sans Thai", "Sukhumvit Set", "Segoe UI", system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
   }
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ตัวเลขในตารางข้อมูลต้องเรียงตรงกัน */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* โฟกัสคีย์บอร์ดเห็นชัดทุกที่ */
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.on-ink :focus-visible {
+  outline-color: var(--gold);
+}
+
+/* หัวข้อ: น้ำหนัก 600–700, บรรทัดชิด */
+h1,
+h2,
+h3 {
+  letter-spacing: -0.01em;
+  line-height: 1.25;
+  font-weight: 600;
+}
+
+/* เนื้อหายาว (กฎหมาย, คู่มือ) */
+.prose-th {
+  max-width: 68ch;
+}
+.prose-th h2 {
+  font-size: 1.375rem;
+  margin-top: 2.25rem;
+  margin-bottom: 0.75rem;
+}
+.prose-th h3 {
+  font-size: 1.125rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+.prose-th p,
+.prose-th li {
+  margin-bottom: 0.75rem;
+  color: var(--text);
+}
+.prose-th ul,
+.prose-th ol {
+  padding-left: 1.5rem;
+  margin-bottom: 1rem;
+}
+.prose-th ul {
+  list-style: disc;
+}
+.prose-th ol {
+  list-style: decimal;
+}
+.prose-th a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.prose-th code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: #e9ecf2;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+/* details/summary สำหรับ FAQ */
+details > summary {
+  list-style: none;
+  cursor: pointer;
+}
+details > summary::-webkit-details-marker {
+  display: none;
+}
+details[open] .faq-chevron {
+  transform: rotate(180deg);
+}
+.faq-chevron {
+  transition: transform 160ms ease;
 }
