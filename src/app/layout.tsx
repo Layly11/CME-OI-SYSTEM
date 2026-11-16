@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import "./globals.css";
+import { HeaderAuth, HeaderAuthView } from "@/components/header-auth";
 import { SiteHeader } from "@/components/site-header";
 import { SiteFooter } from "@/components/site-footer";
 import { site } from "@/content/site";
@@ -35,7 +37,26 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         />
       </head>
       <body className="flex min-h-full flex-col">
-        <SiteHeader />
+        {/* ฟอร์มสมัคร/เข้าสู่ระบบ/สั่งซื้อแสดงผลลัพธ์ผ่าน JavaScript — ปิดไว้จะกดส่งแล้วไม่เห็นข้อความใดๆ จึงต้องบอกตรงๆ */}
+        <noscript>
+          <div role="alert" className="bg-gold-soft px-5 py-3 text-center text-[14.5px] text-text">
+            เว็บไซต์นี้ต้องเปิดใช้ JavaScript จึงจะสมัครสมาชิก เข้าสู่ระบบ และสั่งซื้อได้
+            กรุณาเปิด JavaScript ในเบราว์เซอร์แล้วโหลดหน้านี้ใหม่
+          </div>
+        </noscript>
+        {/* session อ่านใน <Suspense> เท่านั้น — ห้าม await ใน layout (จะทำให้ทุกหน้า prerender ไม่ได้) */}
+        <SiteHeader
+          authDesktop={
+            <Suspense fallback={<HeaderAuthView user={null} variant="desktop" />}>
+              <HeaderAuth variant="desktop" />
+            </Suspense>
+          }
+          authMobile={
+            <Suspense fallback={<HeaderAuthView user={null} variant="mobile" />}>
+              <HeaderAuth variant="mobile" />
+            </Suspense>
+          }
+        />
         <main className="flex-1">{children}</main>
         <SiteFooter />
       </body>

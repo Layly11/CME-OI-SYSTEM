@@ -1,13 +1,16 @@
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { Notice, StatusBadge } from "@/components/form";
 import { Button, Container } from "@/components/ui";
+import { requireAdmin } from "@/lib/auth/dal";
 import { buildLicenseFile, diffLicenseFiles } from "@/lib/license-file";
 
-export const metadata: Metadata = { title: "แอดมิน" };
+export const metadata: Metadata = { title: "แอดมิน", robots: { index: false, follow: false } };
 
 /**
  * หลังบ้าน — ข้อมูลตัวอย่างเพื่อให้เห็นหน้าตาและขั้นตอนทำงานของแอดมิน
- * TODO (เฟสถัดไป): ล็อกอินเฉพาะ role=admin, อ่าน/เขียนฐานข้อมูลจริง, ปุ่มอนุมัติเป็น server action
+ * เข้าได้เฉพาะ role=admin (requireAdmin) — ลูกค้าทั่วไปถูกพากลับหน้าบัญชี
+ * TODO (เฟสถัดไป): อ่าน/เขียนฐานข้อมูลจริง, ปุ่มอนุมัติเป็น server action
  *
  * ส่วน "ไฟล์ license" ด้านล่างใช้โมดูลจริง (src/lib/license-file.ts) สร้างตัวอย่างให้ดู
  */
@@ -24,14 +27,28 @@ const demoActive = [
 
 const previousFile = "id766232.2027.07.02,id97086397.2027.01.01";
 
+/** โครงหน้าแบบ static ไม่มีเนื้อหาแอดมิน — เนื้อหาทั้งหมดอยู่ใน <Suspense> หลังตรวจสิทธิ์ */
 export default function AdminPage() {
+  return (
+    <section className="py-12">
+      <Container>
+        <Suspense fallback={<p className="text-[15px] text-muted" aria-busy="true">กำลังตรวจสอบสิทธิ์…</p>}>
+          <AdminContent />
+        </Suspense>
+      </Container>
+    </section>
+  );
+}
+
+async function AdminContent() {
+  await requireAdmin();
+
   const nextFile = buildLicenseFile(demoActive);
   const diff = diffLicenseFiles(previousFile, nextFile);
 
   return (
-    <section className="py-12">
-      <Container>
-        <Notice tone="warn">หน้าตัวอย่างสำหรับแอดมิน ข้อมูลจำลอง ยังไม่เชื่อมระบบล็อกอินและฐานข้อมูล</Notice>
+    <>
+        <Notice tone="warn">หน้าตัวอย่างสำหรับแอดมิน ข้อมูลจำลอง ยังไม่เชื่อมฐานข้อมูล</Notice>
 
         <h1 className="mt-8 text-[28px] text-ink">หลังบ้าน</h1>
 
@@ -145,7 +162,6 @@ export default function AdminPage() {
             </p>
           </div>
         </div>
-      </Container>
-    </section>
+    </>
   );
 }

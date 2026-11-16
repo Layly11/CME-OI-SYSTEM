@@ -1,0 +1,96 @@
+/** ข้อความภาษาไทยของขั้นตอนสั่งซื้อ รวมไว้ที่เดียว — ทุก reason code ที่ repo/action คืน ต้องมีข้อความที่นี่ */
+export const PURCHASE_REASONS = [
+  "account_number_invalid",
+  "account_number_mismatch",
+  "broker_server_invalid",
+  "label_too_long",
+  "taken",
+  "duplicate_own",
+  "too_many_accounts",
+  "mt5_check_rate_limited",
+  "account_in_use",
+  "package_required",
+  "package_unavailable",
+  "account_not_found",
+  "account_required",
+  "too_many_open_orders",
+  "account_has_open_order",
+  "lifetime_active",
+  "order_not_found",
+  "order_not_cancellable",
+  "order_not_attachable",
+  "slip_required",
+  "empty",
+  "bad_type",
+  "too_large",
+  "slip_not_allowed",
+  "slip_upload_unavailable",
+  "payment_method_invalid",
+  "order_required",
+  "order_not_paid",
+  "order_has_account",
+  "broker_required",
+  "broker_invalid",
+  "order_not_payable",
+  "bank_transfer_disabled",
+  "license_suspended",
+  "payment_unavailable",
+  "activation_pending",
+  "activation_retry_rate_limited",
+  "mock_payment",
+  "duplicate_own_use_existing",
+] as const;
+
+export type PurchaseReason = (typeof PURCHASE_REASONS)[number];
+
+export const purchaseMessages: Record<PurchaseReason, string> = {
+  account_number_invalid: "เลขบัญชี MT5 ต้องเป็นตัวเลขล้วน 4–20 หลัก และไม่ขึ้นต้นด้วย 0",
+  account_number_mismatch: "เลขบัญชีทั้งสองช่องไม่ตรงกัน",
+  broker_server_invalid:
+    "ชื่อ Broker Server ใช้ได้เฉพาะตัวอักษรอังกฤษ ตัวเลข เว้นวรรค จุด ขีดกลาง และขีดล่าง ความยาว 3–64 ตัว",
+  label_too_long: "ชื่อเรียกยาวเกินไป (ไม่เกิน 40 ตัวอักษร)",
+  taken: "เลขบัญชีนี้ถูกลงทะเบียนในระบบแล้ว หากเป็นบัญชีของคุณ กรุณาติดต่อทีมงานทาง LINE",
+  duplicate_own: "คุณเพิ่มเลขบัญชีนี้ไว้แล้ว",
+  too_many_accounts: "เพิ่มบัญชี MT5 ได้สูงสุด 10 บัญชีต่อผู้ใช้ หากต้องการมากกว่านี้ กรุณาติดต่อทีมงานทาง LINE",
+  mt5_check_rate_limited: "ตรวจสอบเลขบัญชีบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่",
+  account_in_use:
+    "ลบบัญชีนี้ไม่ได้ เพราะมี license หรือมีคำสั่งซื้อที่ชำระแล้วหรือรอตรวจสอบผูกอยู่ กรุณาติดต่อทีมงานทาง LINE",
+  package_required: "กรุณาเลือกแพ็กเกจ",
+  package_unavailable: "แพ็กเกจนี้ยังไม่เปิดขายออนไลน์ กรุณาสอบถามราคาทาง LINE",
+  account_not_found: "ไม่พบบัญชี MT5 นี้ในบัญชีผู้ใช้ของคุณ",
+  account_required: "กรุณาเลือกบัญชี MT5",
+  too_many_open_orders:
+    "คุณมีคำสั่งซื้อที่รอดำเนินการครบ 5 รายการแล้ว กรุณาดำเนินการรายการเดิมให้เสร็จ หรือยกเลิกรายการที่ไม่ใช้ก่อน",
+  account_has_open_order: "บัญชีนี้มีคำสั่งซื้อที่รอดำเนินการอยู่แล้ว",
+  lifetime_active: "บัญชีนี้มี license ตลอดชีพที่ใช้งานอยู่แล้ว ไม่ต้องต่ออายุ",
+  order_not_found: "ไม่พบคำสั่งซื้อนี้",
+  order_not_cancellable:
+    "ยกเลิกได้เฉพาะคำสั่งซื้อที่ยังรอชำระ หากชำระเงินแล้ว กรุณาติดต่อทีมงานทาง LINE",
+  order_not_attachable: "คำสั่งซื้อนี้ผูกบัญชี MT5 ไม่ได้ในสถานะปัจจุบัน",
+  slip_required: "กรุณาเลือกไฟล์สลิป",
+  empty: "ไฟล์ว่างเปล่า กรุณาเลือกไฟล์สลิปใหม่",
+  bad_type: "รองรับเฉพาะไฟล์ JPG, PNG, WebP หรือ PDF",
+  too_large: "ไฟล์ต้องมีขนาดไม่เกิน 4 MB",
+  slip_not_allowed: "คำสั่งซื้อนี้แนบสลิปไม่ได้ในสถานะปัจจุบัน",
+  slip_upload_unavailable:
+    "ขณะนี้ยังแนบสลิปผ่านเว็บไม่ได้ กรุณาส่งสลิปพร้อมเลขที่คำสั่งซื้อให้ทีมงานทาง LINE",
+  payment_method_invalid: "กรุณาเลือกวิธีชำระเงิน",
+  order_required: "ต้องสั่งซื้อแพ็กเกจและชำระเงินก่อน จึงจะกรอกเลขบัญชี MT5 ได้",
+  order_not_paid: "คำสั่งซื้อนี้ยังไม่ได้ชำระเงิน กรุณาชำระเงินก่อน",
+  order_has_account: "คำสั่งซื้อนี้ระบุบัญชี MT5 แล้ว",
+  broker_required: "กรุณาเลือกโบรกเกอร์ก่อนกรอกเลขบัญชี MT5",
+  broker_invalid: "กรุณาเลือกโบรกเกอร์จากรายการ",
+  order_not_payable: "คำสั่งซื้อนี้ชำระเงินไม่ได้ในสถานะปัจจุบัน",
+  bank_transfer_disabled: "ขณะนี้ไม่ได้เปิดรับชำระด้วยการโอนเงิน กรุณาชำระด้วยบัตรในหน้าคำสั่งซื้อ",
+  license_suspended: "license ของบัญชีนี้ถูกระงับอยู่ จึงสั่งซื้อหรือต่ออายุเองไม่ได้ กรุณาติดต่อทีมงานทาง LINE",
+  payment_unavailable: "ระบบชำระเงินยังไม่เปิดให้บริการ กรุณาสอบถามทาง LINE",
+  activation_pending:
+    "ระบบยังเปิดใช้งานไม่เสร็จ การชำระเงินและเลขบัญชีของคุณถูกบันทึกแล้ว ไม่ต้องชำระซ้ำ กรุณาลองตรวจสอบอีกครั้งในอีกสักครู่ หรือติดต่อทีมงานทาง LINE",
+  activation_retry_rate_limited: "ตรวจสอบสถานะบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่",
+  mock_payment:
+    "คำสั่งซื้อนี้ชำระด้วยการจำลองการชำระเงิน (โหมดทดสอบ) ซึ่งระบบนี้ไม่เปิด license ให้ กรุณาติดต่อทีมงานทาง LINE",
+  duplicate_own_use_existing:
+    "คุณลงทะเบียนเลขบัญชีนี้ไว้แล้ว ไม่ต้องกรอกใหม่ กลับไปหน้าคำสั่งซื้อแล้วเลือกบัญชีนี้ที่หัวข้อ \"ใช้บัญชี MT5 ที่ลงทะเบียนไว้แล้ว\"",
+};
+
+export const purchaseSystemError = "ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง";

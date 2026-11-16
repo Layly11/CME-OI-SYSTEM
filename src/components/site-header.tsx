@@ -1,12 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Menu, X } from "lucide-react";
 import { nav } from "@/content/site";
-import { ButtonLink, Container, Logo } from "./ui";
+import { Container, Logo } from "./ui";
 
-export function SiteHeader() {
+/**
+ * ปุ่มเข้าสู่ระบบ/บัญชี มาจาก server component (ดู header-auth.tsx) ส่งเข้ามาเป็น slot
+ * เพราะ header นี้เป็น client component จึงอ่าน session เองไม่ได้
+ */
+export function SiteHeader({ authDesktop, authMobile }: { authDesktop: ReactNode; authMobile: ReactNode }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -28,12 +32,7 @@ export function SiteHeader() {
           ))}
         </nav>
 
-        <div className="hidden items-center gap-2 md:flex">
-          <ButtonLink href="/login" variant="ghost">
-            เข้าสู่ระบบ
-          </ButtonLink>
-          <ButtonLink href="/pricing">สมัครใช้งาน</ButtonLink>
-        </div>
+        <div className="hidden items-center gap-2 md:flex">{authDesktop}</div>
 
         <button
           type="button"
@@ -47,30 +46,25 @@ export function SiteHeader() {
         </button>
       </Container>
 
-      {open ? (
-        <div id="mobile-menu" className="border-t border-rule bg-surface md:hidden">
-          <Container className="flex flex-col py-3">
-            {nav.map((item) => (
-              <Link
-                key={item.href}
-                href={item.href}
-                className="py-2.5 text-[16px] text-text"
-                onClick={() => setOpen(false)}
-              >
-                {item.label}
-              </Link>
-            ))}
-            <div className="mt-2 flex gap-2 border-t border-rule pt-3">
-              <ButtonLink href="/login" variant="outline-ink" className="flex-1" onClick={() => setOpen(false)}>
-                เข้าสู่ระบบ
-              </ButtonLink>
-              <ButtonLink href="/pricing" className="flex-1" onClick={() => setOpen(false)}>
-                สมัครใช้งาน
-              </ButtonLink>
-            </div>
-          </Container>
-        </div>
-      ) : null}
+      {/* ซ่อนด้วย hidden แทนการถอดออกจาก DOM: ฟอร์มออกจากระบบใน slot ต้องยังอยู่ใน DOM ตอนที่กดแล้วเมนูปิด */}
+      <div id="mobile-menu" hidden={!open} className="border-t border-rule bg-surface md:hidden">
+        <Container className="flex flex-col py-3">
+          {nav.map((item) => (
+            <Link
+              key={item.href}
+              href={item.href}
+              className="py-2.5 text-[16px] text-text"
+              onClick={() => setOpen(false)}
+            >
+              {item.label}
+            </Link>
+          ))}
+          {/* node จาก server ใส่ onClick เองไม่ได้ จึงปิดเมนูที่ตัวห่อ */}
+          <div className="mt-2 flex gap-2 border-t border-rule pt-3" onClick={() => setOpen(false)}>
+            {authMobile}
+          </div>
+        </Container>
+      </div>
     </header>
   );
 }

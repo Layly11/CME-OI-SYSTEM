@@ -1,55 +1,142 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Download, Mail } from "lucide-react";
+import { Suspense } from "react";
 import { Notice, StatusBadge } from "@/components/form";
+import { LineLink } from "@/components/line-link";
 import { ButtonLink, Container } from "@/components/ui";
+import { requireUser } from "@/lib/auth/dal";
+import { getActivationBlock } from "@/lib/license/activation-block";
+import { activationView, isLicensePublished } from "@/lib/license/published-state";
+import { getLatestPublishedEntries } from "@/lib/license/publish-sync";
+import { findPartnerBroker } from "@/lib/purchase/brokers";
+import { formatOrderNo, formatThaiDate, formatThb, licenseView, todayInBangkok } from "@/lib/purchase/format";
+import { orderStep, type OrderStep } from "@/lib/purchase/order-progress";
+import { listMt5AccountsWithLicense, listOrders } from "@/lib/purchase/repo";
+import { DeleteMt5AccountButton } from "./delete-mt5-account-button";
 
-export const metadata: Metadata = { title: "บัญชีของฉัน" };
+export const metadata: Metadata = { title: "บัญชีของฉัน", robots: { index: false, follow: false } };
 
-/**
- * Member Area — ตอนนี้เป็นข้อมูลตัวอย่างเพื่อให้เห็นหน้าตาและ flow
- * TODO (เฟสถัดไป): อ่านข้อมูลจริงจากฐานข้อมูลตาม user ที่ล็อกอิน (ห่อด้วย <Suspense>)
- */
-const demo = {
-  user: { name: "สมชาย ตัวอย่าง", email: "somchai@example.com" },
-  accounts: [
-    {
-      accountNumber: "97058698",
-      brokerServer: "InterStellarFinancial-Server",
-      license: { status: "active", package: "รายปี", expiresAt: "2027-11-09", daysLeft: 365 },
-    },
-  ],
-  orders: [
-    { id: "ORD-2026-0001", date: "9 พ.ย. 2569", package: "รายปี", amount: "—", status: "paid" },
-  ],
-  downloads: [
-    { name: "CME OI SYSTEM Pro (indicator)", version: "3.2", date: "9 พ.ย. 2569" },
-    { name: "คู่มือติดตั้งและใช้งาน (PDF)", version: "2026.11", date: "9 พ.ย. 2569" },
-  ],
-};
-
+/** โครงหน้าแบบ static (ไม่มีข้อมูลผู้ใช้) — เนื้อหาจริงอยู่ใน <Suspense> หลังตรวจ session */
 export default function AccountPage() {
   return (
     <section className="py-12">
       <Container>
-        <Notice tone="warn">
-          หน้านี้แสดงข้อมูลตัวอย่าง ยังไม่เชื่อมระบบล็อกอินและฐานข้อมูล (จะเชื่อมในเฟสถัดไป)
-        </Notice>
+        <Suspense fallback={<AccountSkeleton />}>
+          <AccountContent />
+        </Suspense>
+      </Container>
+    </section>
+  );
+}
 
-        <div className="mt-8 flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <h1 className="text-[28px] text-ink">บัญชีของฉัน</h1>
-            <p className="text-[15px] text-muted">
-              {demo.user.name} · {demo.user.email}
-            </p>
-          </div>
-          <ButtonLink href="/pricing" variant="outline-ink">
-            ซื้อ license เพิ่ม
+function AccountSkeleton() {
+  return (
+    <div aria-busy="true">
+      <h1 className="text-[28px] text-ink">บัญชีของฉัน</h1>
+      <p className="text-[15px] text-muted">กำลังโหลดข้อมูล…</p>
+    </div>
+  );
+}
+
+/** Member Area — บัญชี MT5 / license / คำสั่งซื้อ ของผู้ใช้ที่ล็อกอินเท่านั้น (ทุก query กรองด้วย user.id) */
+async function AccountContent() {
+  const user = await requireUser("/account");
+  const [accounts, orders] = await Promise.all([listMt5AccountsWithLicense(user.id), listOrders(user.id)]);
+  // รายชื่อ license ที่เผยแพร่ล่าสุด (สิ่งที่บอทอ่าน) — license ที่ active ในฐานข้อมูลแต่ยังไม่อยู่ในรายชื่อนี้ แสดงเป็น "กำลังเปิดใช้งาน"
+  const published = accounts.some((a) => a.license) ? await getLatestPublishedEntries() : new Map<string, string>();
+  // เรียกเวลาปัจจุบันหลัง await requireUser เท่านั้น (ไม่อยู่ในส่วนที่ prerender)
+  const today = todayInBangkok(new Date());
+
+  // ขั้นของแต่ละคำสั่งซื้อ — "เปิดใช้งานแล้ว" เมื่อ license ของคำสั่งซื้ออยู่ในรายชื่อที่เผยแพร่แล้วเท่านั้น
+  // คำสั่งซื้อที่ชำระแล้ว มีบัญชี แต่ยังไม่มี license (ปกติไม่มีเลย) ถูกถามเพิ่มว่าถูกกันหรือแค่รอ
+  const orderViews = await Promise.all(
+    orders.map(async (o) => {
+      const activation = activationView(o.activatedLicense, o.accountNumber, published, today);
+      const blocked = (await getActivationBlock(o)) !== null;
+      const step = orderStep(o, activation.kind === "none" ? null : { published: activation.kind !== "pending" }, blocked);
+      const badge =
+        o.status !== "paid"
+          ? o.status
+          : activation.kind === "ended"
+            ? activation.status
+            : step === "active"
+              ? "order_active"
+              : step;
+      return { order: o, step, badge };
+    }),
+  );
+  // คำสั่งซื้อที่ชำระแล้วและยังต้องให้ลูกค้าทำต่อ (เลือกโบรกเกอร์ / กรอกเลขบัญชี / กดตรวจสอบสถานะ / ติดต่อทีมงาน)
+  // ลูกค้าที่ออกไปเปิดบัญชีเทรดแล้วล็อกอินกลับมา ต้องเห็นทางไปต่อที่หัวหน้า ไม่ใช่ปุ่ม "สั่งซื้อแพ็กเกจ" อีกรอบ
+  const nextSteps: Partial<Record<OrderStep, { text: string; action: string }>> = {
+    choose_broker: { text: "ชำระแล้ว ขั้นถัดไป: เลือกโบรกเกอร์และกรอกเลขบัญชี MT5", action: "เลือกโบรกเกอร์" },
+    submit_account: { text: "ชำระแล้ว ขั้นถัดไป: กรอกเลขบัญชี MT5 เพื่อเปิด license", action: "กรอกเลขบัญชี MT5" },
+    activating: { text: "ชำระแล้ว แต่ license ยังเปิดใช้งานไม่เสร็จ", action: "ตรวจสอบสถานะ" },
+    blocked: { text: "ชำระแล้ว แต่ระบบเปิดใช้งานอัตโนมัติไม่ได้ กรุณาติดต่อทีมงาน", action: "ดูรายละเอียด" },
+  };
+  const unfinished = orderViews.filter((v) => nextSteps[v.step] !== undefined);
+  // มี license ที่บอทใช้ได้จริงแล้วอย่างน้อย 1 บัญชี (active ยังไม่หมดอายุ และอยู่ในรายชื่อที่เผยแพร่)
+  const hasActiveLicense = accounts.some(
+    (a) =>
+      a.license !== null &&
+      licenseView(a.license, today).status === "active" &&
+      isLicensePublished(published, a.accountNumber, a.license.expiresAt),
+  );
+
+  return (
+    <>
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[28px] text-ink">บัญชีของฉัน</h1>
+          <p className="text-[15px] text-muted">
+            {user.name ? `${user.name} · ` : ""}
+            {user.email}
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-3">
+          {/* มีคำสั่งซื้อที่ชำระแล้วรอทำต่อ: ปุ่มนี้เป็นรอง ทางหลักคือประกาศด้านล่าง */}
+          <ButtonLink href="/account/orders/new" variant={unfinished.length > 0 ? "outline-ink" : "gold"}>
+            สั่งซื้อแพ็กเกจ
           </ButtonLink>
         </div>
+      </div>
 
-        {/* License */}
-        <h2 className="mt-10 text-[20px] text-ink">License และบัญชี MT5</h2>
+      {unfinished.length > 0 ? (
+        <div className="mt-6 space-y-3" data-testid="unfinished-orders">
+          {unfinished.map(({ order: o, step }) => (
+            <Notice key={o.id} tone={step === "blocked" ? "warn" : "success"}>
+              <span className="tabular font-semibold">คำสั่งซื้อ {formatOrderNo(o.orderNo)}</span> ({o.packageName}):{" "}
+              {nextSteps[step]?.text}{" "}
+              <Link href={`/account/orders/${o.id}`} className="font-semibold text-link underline underline-offset-4">
+                {nextSteps[step]?.action}
+              </Link>
+            </Notice>
+          ))}
+        </div>
+      ) : null}
+
+      {/* License */}
+      <h2 className="mt-10 text-[20px] text-ink">License และบัญชี MT5</h2>
+      {accounts.length === 0 && unfinished.length > 0 ? (
+        // มีคำสั่งซื้อที่ชำระแล้วรออยู่: ไม่ชวนสั่งซื้อใหม่ (กดแล้วจะได้คำสั่งซื้อที่สองและจ่ายซ้ำ)
+        <div className="mt-3 rounded-lg border border-rule bg-surface px-5 py-6">
+          <p className="text-[15px] text-text">ยังไม่มีบัญชี MT5 ในระบบ</p>
+          <p className="mt-1 text-[14px] text-muted">
+            คุณชำระเงินแล้ว ไม่ต้องสั่งซื้อใหม่ ทำขั้นถัดไปของคำสั่งซื้อด้านบนให้เสร็จ บัญชี MT5 และ license
+            จะแสดงที่นี่ (ไม่ต้องใส่รหัสผ่าน MT5)
+          </p>
+        </div>
+      ) : accounts.length === 0 ? (
+        <div className="mt-3 rounded-lg border border-rule bg-surface px-5 py-6">
+          <p className="text-[15px] text-text">ยังไม่มีบัญชี MT5 ในระบบ</p>
+          <p className="mt-1 text-[14px] text-muted">
+            เริ่มจากสั่งซื้อแพ็กเกจและชำระเงิน จากนั้นเลือกโบรกเกอร์ แล้วกรอกเลขบัญชี MT5 ในหน้าคำสั่งซื้อ
+            (ไม่ต้องใส่รหัสผ่าน MT5) ยังไม่มีบัญชีเทรดก็สั่งซื้อก่อนได้
+          </p>
+          <div className="mt-4 flex flex-wrap gap-3">
+            <ButtonLink href="/account/orders/new">สั่งซื้อแพ็กเกจ</ButtonLink>
+          </div>
+        </div>
+      ) : (
         <div className="mt-3 overflow-x-auto rounded-lg border border-rule bg-surface">
           <table className="tabular w-full min-w-[640px] text-left text-[14.5px]">
             <thead className="border-b border-rule text-[13px] text-muted">
@@ -63,89 +150,147 @@ export default function AccountPage() {
               </tr>
             </thead>
             <tbody>
-              {demo.accounts.map((a) => (
-                <tr key={a.accountNumber} className="border-b border-rule last:border-0">
-                  <td className="px-4 py-3 font-medium text-ink">{a.accountNumber}</td>
-                  <td className="px-4 py-3">{a.brokerServer}</td>
-                  <td className="px-4 py-3">{a.license.package}</td>
-                  <td className="px-4 py-3">
-                    {a.license.expiresAt}{" "}
-                    <span className="text-muted">(อีก {a.license.daysLeft} วัน)</span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={a.license.status} />
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Link href="/pricing" className="text-link underline underline-offset-4">
-                      ต่ออายุ
-                    </Link>
-                  </td>
-                </tr>
-              ))}
+              {accounts.map((a) => {
+                const view = a.license ? licenseView(a.license, today) : null;
+                // license ตลอดชีพที่ใช้งานอยู่ไม่มีอะไรให้ต่ออายุ (createOrder ปฏิเสธซ้ำอีกชั้น)
+                const lifetimeActive = view !== null && view.lifetime && view.status === "active";
+                const awaitingPublish =
+                  a.license !== null &&
+                  view?.status === "active" &&
+                  !isLicensePublished(published, a.accountNumber, a.license.expiresAt);
+                return (
+                  <tr key={a.id} className="border-b border-rule last:border-0">
+                    <td className="px-4 py-3 font-medium text-ink">
+                      {a.accountNumber}
+                      {a.label ? <span className="block text-[13px] font-normal text-muted">{a.label}</span> : null}
+                    </td>
+                    <td className="px-4 py-3">
+                      {a.brokerServer}
+                      {findPartnerBroker(a.partnerBrokerCode) ? (
+                        <span className="block text-[13px] text-muted">
+                          พาร์ตเนอร์: {findPartnerBroker(a.partnerBrokerCode)?.name}
+                        </span>
+                      ) : null}
+                    </td>
+                    <td className="px-4 py-3">{a.license?.packageName ?? "—"}</td>
+                    <td className="px-4 py-3">
+                      {a.license && view ? (
+                        view.lifetime ? (
+                          "ตลอดชีพ"
+                        ) : (
+                          <>
+                            {formatThaiDate(a.license.expiresAt)}{" "}
+                            {view.status === "active" ? (
+                              <span className="text-muted">(อีก {view.daysRemaining} วัน)</span>
+                            ) : null}
+                          </>
+                        )
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {view ? (
+                        <StatusBadge status={awaitingPublish ? "activating" : view.status} />
+                      ) : (
+                        <span className="text-muted">ยังไม่มี license</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="inline-flex flex-wrap items-start justify-end gap-x-4 gap-y-1">
+                        {lifetimeActive ? null : (
+                          <Link
+                            href={`/account/orders/new?account=${a.id}`}
+                            className="text-link underline underline-offset-4"
+                          >
+                            {view ? "ต่ออายุ" : "สั่งซื้อ"}
+                          </Link>
+                        )}
+                        {/* ลบได้เฉพาะบัญชีที่ยังไม่มี license — เซิร์ฟเวอร์ตรวจซ้ำ รวมถึงคำสั่งซื้อที่ชำระแล้ว/รอตรวจ */}
+                        {a.license === null ? (
+                          <DeleteMt5AccountButton accountId={a.id} accountNumber={a.accountNumber} />
+                        ) : null}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
-        <p className="mt-2 text-[13.5px] text-muted">
-          ต้องการย้าย license ไปบัญชี MT5 อื่น ติดต่อทีมงานทาง LINE
-        </p>
+      )}
+      <p className="mt-2 text-[13.5px] text-muted">
+        กรอกเลขบัญชีผิด? ยังเปลี่ยนเลขบัญชีหลังเปิดใช้งานเองไม่ได้ การแก้เลขบัญชีที่มี license แล้ว หรือย้าย license
+        ไปบัญชี MT5 อื่น ติดต่อทีมงานทาง LINE
+      </p>
 
-        {/* Downloads */}
-        <h2 className="mt-10 text-[20px] text-ink">ดาวน์โหลด</h2>
-        <p className="text-[14.5px] text-muted">
-          ไฟล์ชุดเดียวกับที่ส่งให้ทางอีเมล ดาวน์โหลดซ้ำได้ตลอดช่วงที่ license ยังใช้งานได้
-        </p>
-        <ul className="mt-3 divide-y divide-rule rounded-lg border border-rule bg-surface">
-          {demo.downloads.map((d) => (
-            <li key={d.name} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5">
-              <div>
-                <p className="text-[15px] font-medium text-ink">{d.name}</p>
-                <p className="text-[13.5px] text-muted">
-                  เวอร์ชัน {d.version} · อัปเดต {d.date}
-                </p>
-              </div>
-              <button
-                type="button"
-                className="inline-flex items-center gap-2 rounded-md border border-rule px-3 py-1.5 text-[14px] text-ink hover:bg-ink/5"
-                disabled
-              >
-                <Download size={16} aria-hidden="true" /> ดาวน์โหลด
-              </button>
-            </li>
-          ))}
-        </ul>
-        <p className="mt-2 flex items-center gap-2 text-[13.5px] text-muted">
-          <Mail size={15} aria-hidden="true" /> ไม่ได้รับอีเมล? ตรวจโฟลเดอร์สแปม หรือกดส่งอีเมลซ้ำได้ที่นี่ (เฟสถัดไป)
-        </p>
-
-        {/* Orders */}
-        <h2 className="mt-10 text-[20px] text-ink">ประวัติคำสั่งซื้อ</h2>
+      {/* Orders */}
+      <h2 className="mt-10 text-[20px] text-ink">ประวัติคำสั่งซื้อ</h2>
+      {orders.length === 0 ? (
+        <div className="mt-3 rounded-lg border border-rule bg-surface px-5 py-6">
+          <p className="text-[15px] text-text">ยังไม่มีคำสั่งซื้อ</p>
+          <div className="mt-4">
+            <ButtonLink href="/account/orders/new">สั่งซื้อแพ็กเกจ</ButtonLink>
+          </div>
+        </div>
+      ) : (
         <div className="mt-3 overflow-x-auto rounded-lg border border-rule bg-surface">
-          <table className="tabular w-full min-w-[560px] text-left text-[14.5px]">
+          <table className="tabular w-full min-w-[620px] text-left text-[14.5px]">
             <thead className="border-b border-rule text-[13px] text-muted">
               <tr>
                 <th className="px-4 py-3 font-medium">เลขที่</th>
                 <th className="px-4 py-3 font-medium">วันที่</th>
                 <th className="px-4 py-3 font-medium">แพ็กเกจ</th>
+                <th className="px-4 py-3 font-medium">บัญชี MT5</th>
                 <th className="px-4 py-3 font-medium">ยอด</th>
                 <th className="px-4 py-3 font-medium">สถานะ</th>
+                <th className="px-4 py-3 font-medium"></th>
               </tr>
             </thead>
             <tbody>
-              {demo.orders.map((o) => (
+              {orderViews.map(({ order: o, badge }) => {
+                return (
                 <tr key={o.id} className="border-b border-rule last:border-0">
-                  <td className="px-4 py-3 font-medium text-ink">{o.id}</td>
-                  <td className="px-4 py-3">{o.date}</td>
-                  <td className="px-4 py-3">{o.package}</td>
-                  <td className="px-4 py-3">{o.amount}</td>
+                  <td className="px-4 py-3 font-medium text-ink">{formatOrderNo(o.orderNo)}</td>
+                  <td className="px-4 py-3">{formatThaiDate(o.createdAt)}</td>
+                  <td className="px-4 py-3">{o.packageName}</td>
+                  <td className="px-4 py-3">{o.accountNumber ?? <span className="text-muted">ยังไม่ระบุ</span>}</td>
+                  <td className="px-4 py-3">{formatThb(o.amountThb)}</td>
                   <td className="px-4 py-3">
-                    <StatusBadge status={o.status} />
+                    <StatusBadge status={badge} />
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <Link href={`/account/orders/${o.id}`} className="text-link underline underline-offset-4">
+                      ดูรายละเอียด
+                    </Link>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
-      </Container>
-    </section>
+      )}
+
+      {/* Downloads */}
+      <h2 className="mt-10 text-[20px] text-ink">ดาวน์โหลด</h2>
+      {/* ยังไม่มีระบบดาวน์โหลด (download_assets) และยังไม่ส่งอีเมล — บอกวิธีรับไฟล์ที่ใช้ได้จริงตอนนี้ */}
+      <p className="mt-1 text-[14.5px] text-muted" data-testid="downloads">
+        {hasActiveLicense ? (
+          <>
+            license ของคุณเปิดใช้งานแล้ว รับไฟล์ติดตั้งและคู่มือได้โดยติดต่อทีมงาน <LineLink>ทาง LINE</LineLink>{" "}
+            แจ้งเลขบัญชี MT5 หรือเลขที่คำสั่งซื้อ (หน้านี้ยังดาวน์โหลดเองไม่ได้ และระบบยังไม่ส่งไฟล์ทางอีเมล) จากนั้น{" "}
+            <Link href="/install" className="text-link underline underline-offset-4">
+              ดูวิธีติดตั้ง
+            </Link>
+          </>
+        ) : (
+          <>
+            เมื่อ license เปิดใช้งานแล้ว รับไฟล์ติดตั้งและคู่มือได้โดยติดต่อทีมงาน <LineLink>ทาง LINE</LineLink>{" "}
+            (หน้านี้ยังดาวน์โหลดเองไม่ได้ และระบบยังไม่ส่งไฟล์ทางอีเมล)
+          </>
+        )}
+      </p>
+    </>
   );
 }

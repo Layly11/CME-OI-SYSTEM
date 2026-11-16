@@ -31,9 +31,11 @@ export default function HomePage() {
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <ButtonLink href="/pricing">ดูแพ็กเกจ</ButtonLink>
-              <ButtonLink href={site.lineUrl} variant="outline-light">
-                สอบถามทาง LINE
-              </ButtonLink>
+              {site.lineUrl !== null ? (
+                <ButtonLink href={site.lineUrl} variant="outline-light" target="_blank" rel="noopener noreferrer">
+                  สอบถามทาง LINE
+                </ButtonLink>
+              ) : null}
             </div>
             <p className="mt-6 text-[13.5px] text-on-ink-muted">
               ใช้กับบัญชี MT5 ของคุณเอง เราไม่ขอรหัสผ่านบัญชีเทรด
@@ -229,7 +231,8 @@ export default function HomePage() {
           <div className="max-w-[640px]">
             <h2 className="text-[28px] text-on-ink sm:text-[34px]">เริ่มจากดูว่าเงินก้อนใหญ่อยู่ตรงไหน</h2>
             <p className="mt-4 max-w-[48ch] text-[17px] text-on-ink-muted">
-              สมัคร เลือกแพ็กเกจ ลงทะเบียนเลขบัญชี MT5 แล้วรับไฟล์ติดตั้งทางอีเมล ใช้เวลาติดตั้งไม่เกิน 10 นาที
+              สมัคร เลือกแพ็กเกจ ชำระเงิน เลือกโบรกเกอร์ แล้วกรอกเลขบัญชี MT5 ระบบเปิด license ให้อัตโนมัติ
+              รับไฟล์ติดตั้งจากทีมงานทาง LINE ใช้เวลาติดตั้งไม่เกิน 10 นาที
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <ButtonLink href="/pricing">ดูแพ็กเกจ</ButtonLink>

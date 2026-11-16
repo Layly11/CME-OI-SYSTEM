@@ -2,14 +2,17 @@ import "server-only";
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte } from "drizzle-orm";
 import { getDb, schema } from "@/db";
-import { buildLicenseFile, dateToIso, type LicenseEntry } from "./license-file";
+import { buildLicenseFile, type LicenseEntry } from "./license-file";
 import { getLicenseStorage } from "./license-storage";
+import { todayInBangkok } from "./purchase/format";
 
 /**
  * รวบรวม license ที่ยังใช้ได้ทั้งหมดจากฐานข้อมูลเป็นรายการสำหรับสร้างไฟล์
  * เงื่อนไข: status = active และ expires_at >= วันนี้
+ * "วันนี้" = วันที่ตามเวลาไทย (UTC+7) ไม่ใช่เวลาเครื่องของเซิร์ฟเวอร์ — นาฬิกาเดียวกับการเปิด/ต่ออายุ license และหน้าสมาชิก
+ * (เซิร์ฟเวอร์ UTC จะไม่เก็บรายที่หมดอายุไว้เกินเที่ยงคืนไทย และเซิร์ฟเวอร์ที่เร็วกว่าไทยจะไม่ตัดก่อนวันสุดท้ายจบ)
  */
-export async function collectActiveEntries(today = dateToIso(new Date())): Promise<LicenseEntry[]> {
+export async function collectActiveEntries(today = todayInBangkok(new Date())): Promise<LicenseEntry[]> {
   const db = getDb();
   const rows = await db
     .select({

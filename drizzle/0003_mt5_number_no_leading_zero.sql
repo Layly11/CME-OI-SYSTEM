@@ -1,0 +1,2 @@
+ALTER TABLE "mt5_accounts" DROP CONSTRAINT "mt5_accounts_number_digits";--> statement-breakpoint
+ALTER TABLE "mt5_accounts" ADD CONSTRAINT "mt5_accounts_number_digits" CHECK ("mt5_accounts"."account_number" ~ '^[1-9][0-9]{0,19}$');

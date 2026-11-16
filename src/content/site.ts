@@ -5,13 +5,28 @@
  * กติกาการเขียน: ไม่มีคำการันตีกำไร ไม่มีตัวเลขผลตอบแทน อธิบายว่า "เครื่องมือทำอะไร" ไม่ใช่ "จะได้เท่าไร"
  */
 
+/**
+ * ลิงก์ LINE OA จาก NEXT_PUBLIC_LINE_URL — รับเฉพาะ https:// (ค่าว่าง/รูปแบบอื่น = ยังไม่ได้ตั้ง → null)
+ * null ทำให้ทุกจุด "ติดต่อทาง LINE" แสดงเป็นข้อความธรรมดาแทนลิงก์ที่กดไม่ไป (ดู src/components/line-link.tsx)
+ */
+export function parseLineUrl(raw: string | undefined): string | null {
+  const value = (raw ?? "").trim();
+  if (!/^https:\/\/[^\s/]+/i.test(value)) return null;
+  try {
+    return new URL(value).toString();
+  } catch {
+    return null;
+  }
+}
+
 export const site = {
   name: "CME OI SYSTEM",
   tagline: "รู้ก่อน เห็นก่อน เทรดได้เปรียบ ด้วยข้อมูลที่สถาบันใช้จริง",
   description:
     "เครื่องมือวิเคราะห์ทองคำ (XAUUSD) บน MetaTrader 5 ที่นำ Open Interest, Option Flow และ Volume จาก CME Group มาวางบนกราฟของคุณ",
-  // TODO: ใส่ลิงก์ LINE OA จริงของลูกค้าใน .env.local (NEXT_PUBLIC_LINE_URL)
-  lineUrl: process.env.NEXT_PUBLIC_LINE_URL ?? "#line",
+  // TODO: ใส่ลิงก์ LINE OA จริงของลูกค้าใน .env.local (NEXT_PUBLIC_LINE_URL) — ค่านี้ถูกฝังตอน build
+  // null = ยังไม่ได้ตั้ง: ใช้ <LineLink> แสดงผล ห้ามใส่ลง href ตรงๆ
+  lineUrl: parseLineUrl(process.env.NEXT_PUBLIC_LINE_URL),
   copyrightYear: 2026,
   developer: {
     name: "อ.ธวัช ไชยศิริ",
@@ -178,7 +193,7 @@ export const faqs = [
   },
   {
     q: "หมดอายุแล้วเกิดอะไรขึ้น",
-    a: "indicator จะหยุดแสดงข้อมูลจนกว่าจะต่ออายุ ระบบจะแจ้งเตือนทางอีเมลล่วงหน้าก่อนหมดอายุ และต่ออายุได้จากหน้าบัญชีของคุณ วันที่เหลือจะถูกนับต่อ ไม่หายไป",
+    a: "indicator จะหยุดแสดงข้อมูลจนกว่าจะต่ออายุ ดูวันหมดอายุและต่ออายุได้จากหน้าบัญชีของคุณ ถ้าต่ออายุก่อนหมด วันที่เหลือจะถูกนับต่อ ไม่หายไป",
   },
 ];
 

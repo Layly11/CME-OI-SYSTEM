@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { ChevronDown } from "lucide-react";
 import { Container, SectionTitle } from "@/components/ui";
-import { faqs, site } from "@/content/site";
+import { LineLink } from "@/components/line-link";
+import { faqs } from "@/content/site";
 
 export const metadata: Metadata = {
   title: "คำถามที่พบบ่อย",
@@ -31,9 +32,9 @@ export default function FaqPage() {
           </div>
           <p className="mt-8 text-[15px] text-muted">
             ยังมีคำถาม? ติดต่อทีมงานทาง{" "}
-            <a href={site.lineUrl} className="text-link underline underline-offset-4">
+            <LineLink>
               LINE
-            </a>
+            </LineLink>
           </p>
         </Container>
       </section>

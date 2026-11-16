@@ -1,18 +1,27 @@
 import type { Metadata } from "next";
 import { Check } from "lucide-react";
 import { ButtonLink, Container, SectionTitle } from "@/components/ui";
-import { packageIncludes, packages, riskNotice, site } from "@/content/site";
+import { LineLink } from "@/components/line-link";
+import { packageIncludes, packages, riskNotice } from "@/content/site";
 
 export const metadata: Metadata = {
   title: "แพ็กเกจและราคา",
   description: "เลือกระยะเวลาใช้งาน CME OI SYSTEM รายเดือน 6 เดือน รายปี หรือตลอดชีพ ทุกแพ็กเกจได้เครื่องมือครบชุด",
 };
 
+// ลำดับตรงกับหน้าคำสั่งซื้อจริง: ชำระ → เลือกโบรกเกอร์ → กรอกเลขบัญชี MT5 → เปิด license อัตโนมัติ
+// ระบบยังไม่ส่งอีเมลและยังไม่มีหน้าดาวน์โหลด — ไฟล์ติดตั้งรับจากทีมงานทาง LINE (อย่าเขียนว่าส่งทางอีเมลจนกว่าจะทำจริง)
 const buySteps = [
-  { title: "เลือกแพ็กเกจ", body: "รายเดือน 6 เดือน รายปี หรือตลอดชีพ" },
-  { title: "สมัครและลงทะเบียนเลขบัญชี MT5", body: "ใส่เลขบัญชีและชื่อเซิร์ฟเวอร์โบรกเกอร์ ไม่ต้องใส่รหัสผ่าน" },
-  { title: "ชำระเงิน", body: "โอนผ่านธนาคารหรือ PromptPay แล้วแนบสลิป (บัตรเครดิตจะเปิดให้ใช้เร็วๆ นี้)" },
-  { title: "รับไฟล์ติดตั้งทางอีเมล", body: "เมื่อทีมงานยืนยันการชำระเงิน license จะเปิดใช้และส่งลิงก์ดาวน์โหลดพร้อมคู่มือให้ทันที" },
+  { title: "เลือกแพ็กเกจและสมัครสมาชิก", body: "รายเดือน 6 เดือน รายปี หรือตลอดชีพ สมัครสมาชิกเว็บด้วยอีเมลและรหัสผ่านของเว็บ" },
+  { title: "ชำระเงินด้วยบัตร", body: "ชำระด้วยบัตรเครดิต/เดบิต ยังไม่มีบัญชีเทรดก็ชำระก่อนได้" },
+  {
+    title: "เลือกโบรกเกอร์และเปิดบัญชีเทรด",
+    body: "เลือกโบรกเกอร์พาร์ตเนอร์ 1 ราย เปิดบัญชีเทรดกับโบรกเกอร์โดยตรง ลูกค้าเดิมใช้บัญชี MT5 ที่ลงทะเบียนไว้แล้วได้",
+  },
+  {
+    title: "กรอกเลขบัญชี MT5",
+    body: "กลับมากรอกเลขบัญชี MT5 (ไม่ต้องใส่รหัสผ่าน MT5) ระบบเปิด license ให้อัตโนมัติ แล้วรับไฟล์ติดตั้งจากทีมงานทาง LINE",
+  },
 ];
 
 export default function PricingPage() {
@@ -64,9 +73,9 @@ export default function PricingPage() {
               </ul>
               <p className="mt-6 text-[14.5px] text-muted">
                 ลูกค้าที่เปิดบัญชีเทรดผ่านพาร์ตเนอร์ของเรามีเงื่อนไขพิเศษ สอบถามรายละเอียดได้ทาง{" "}
-                <a href={site.lineUrl} className="text-link underline underline-offset-4">
+                <LineLink>
                   LINE
-                </a>
+                </LineLink>
               </p>
             </div>
             <div>

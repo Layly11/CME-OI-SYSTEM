@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { LineLink } from "@/components/line-link";
 import { legalLinks, nav, riskNotice, site } from "@/content/site";
 import { Container, Logo } from "./ui";
 
@@ -12,9 +13,7 @@ export function SiteFooter() {
             <p className="mt-4 max-w-[46ch] text-[15px]">{site.description}</p>
             <p className="mt-4 text-[15px]">
               สอบถามและติดต่อทีมงานผ่าน{" "}
-              <a href={site.lineUrl} className="text-on-ink underline underline-offset-4">
-                LINE
-              </a>
+              <LineLink className="text-on-ink underline underline-offset-4">LINE</LineLink>
             </p>
           </div>
           <div>

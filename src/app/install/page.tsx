@@ -1,11 +1,11 @@
 import type { Metadata } from "next";
 import Image from "next/image";
 import { Container, SectionTitle } from "@/components/ui";
-import { site } from "@/content/site";
+import { LineLink } from "@/components/line-link";
 
 export const metadata: Metadata = {
   title: "วิธีติดตั้งบน MT5",
-  description: "ขั้นตอนติดตั้ง CME OI SYSTEM บน MetaTrader 5 ตั้งแต่ดาวน์โหลดไฟล์จนถึงเปิดใช้งานบนกราฟ XAUUSD",
+  description: "ขั้นตอนติดตั้ง CME OI SYSTEM บน MetaTrader 5 ตั้งแต่รับไฟล์ติดตั้งจนถึงเปิดใช้งานบนกราฟ XAUUSD",
 };
 
 // TODO: ยืนยันกับลูกค้า — URL ของไฟล์ license และชื่อไฟล์ indicator จริง
@@ -17,12 +17,13 @@ const installSteps = [
     body: "ดาวน์โหลด MT5 จากเว็บโบรกเกอร์ของคุณ ล็อกอินด้วยบัญชีที่ลงทะเบียน license ไว้ เลขบัญชีต้องตรงกับที่แจ้งในระบบ",
   },
   {
-    title: "ดาวน์โหลดไฟล์จากอีเมลหรือหน้าบัญชี",
-    body: "หลัง license เปิดใช้งาน คุณจะได้รับอีเมลพร้อมลิงก์ดาวน์โหลด ไฟล์เดียวกันดาวน์โหลดซ้ำได้จากหน้าบัญชีสมาชิก",
+    // ยังไม่มีอีเมลลิงก์ดาวน์โหลดและหน้าดาวน์โหลดในบัญชีสมาชิก — เขียนตามที่ทำได้จริงตอนนี้
+    title: "รับไฟล์ติดตั้งจากทีมงาน",
+    body: "หลังหน้าคำสั่งซื้อขึ้นว่า license เปิดใช้งานแล้ว ติดต่อทีมงานทาง LINE พร้อมเลขที่คำสั่งซื้อหรือเลขบัญชี MT5 เพื่อรับไฟล์ติดตั้งและคู่มือ",
   },
   {
     title: "วางไฟล์ในโฟลเดอร์ Indicators",
-    body: "ใน MT5 ไปที่ File → Open Data Folder → MQL5 → Indicators แล้ววางไฟล์ .ex5 ที่ดาวน์โหลดมา จากนั้นปิดและเปิด MT5 ใหม่ หรือคลิกขวาที่ Navigator แล้วเลือก Refresh",
+    body: "ใน MT5 ไปที่ File → Open Data Folder → MQL5 → Indicators แล้ววางไฟล์ .ex5 ที่ได้รับมา จากนั้นปิดและเปิด MT5 ใหม่ หรือคลิกขวาที่ Navigator แล้วเลือก Refresh",
   },
   {
     title: "อนุญาตให้ indicator เชื่อมต่ออินเทอร์เน็ต",
@@ -41,7 +42,7 @@ const installSteps = [
 const troubleshooting = [
   {
     q: "ตารางไม่ขึ้น หรือขึ้นว่าไม่พบ license",
-    a: "ตรวจว่าเลขบัญชีที่ล็อกอินอยู่ตรงกับที่ลงทะเบียน และ license ยังไม่หมดอายุ (ดูได้ในหน้าบัญชี) ถ้าเพิ่งชำระเงิน รอทีมงานยืนยันก่อน",
+    a: "ตรวจว่าเลขบัญชีที่ล็อกอินอยู่ตรงกับที่ลงทะเบียน และ license ยังไม่หมดอายุ (ดูได้ในหน้าบัญชี) ถ้าเพิ่งชำระเงินและกรอกเลขบัญชี ให้ดูว่าหน้าคำสั่งซื้อขึ้นว่าเปิดใช้งานแล้ว",
   },
   {
     q: "ขึ้นข้อความเกี่ยวกับ WebRequest",
@@ -106,9 +107,9 @@ export default function InstallPage() {
               </dl>
               <p className="mt-4 text-[14.5px] text-muted">
                 ยังไม่ได้ ส่งภาพหน้าจอมาทาง{" "}
-                <a href={site.lineUrl} className="text-link underline underline-offset-4">
+                <LineLink>
                   LINE
-                </a>{" "}
+                </LineLink>{" "}
                 ทีมงานช่วยดูให้
               </p>
             </div>

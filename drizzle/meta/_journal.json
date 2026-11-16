@@ -8,6 +8,34 @@
       "when": 1794188297766,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1794818705348,
+      "tag": "0001_auth",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794819513204,
+      "tag": "0002_purchase",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794821961431,
+      "tag": "0003_mt5_number_no_leading_zero",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1794823994369,
+      "tag": "0004_card_payment_auto_activation",
+      "breakpoints": true
     }
   ]
 }
