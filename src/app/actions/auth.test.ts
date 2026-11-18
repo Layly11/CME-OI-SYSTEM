@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { redirectTarget } from "@/test/next-redirect";
 
 vi.mock("server-only", () => ({}));
-vi.mock("next/headers", () => ({ headers: vi.fn() }));
+vi.mock("next/headers", () => ({ headers: vi.fn(), cookies: vi.fn() }));
 vi.mock("@/lib/auth/password", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/auth/password")>()),
   hashPassword: vi.fn(),
@@ -17,15 +17,17 @@ vi.mock("@/lib/auth/rate-limit", () => ({
 vi.mock("@/lib/auth/session", () => ({ startSession: vi.fn() }));
 vi.mock("@/lib/auth/session-store", () => ({ deleteExpiredSessions: vi.fn() }));
 vi.mock("@/lib/auth/users", () => ({ createUser: vi.fn(), findUserForLogin: vi.fn(), writeAuthAudit: vi.fn() }));
+vi.mock("@/lib/purchase/referral", () => ({ findReferrerIdByCode: vi.fn() }));
 
-import { headers } from "next/headers";
-import { RATE_LIMITS } from "@/lib/auth/constants";
+import { cookies, headers } from "next/headers";
+import { RATE_LIMITS, REFERRAL_COOKIE_NAME } from "@/lib/auth/constants";
 import { authMessages } from "@/lib/auth/messages";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { consumeIpRateLimit, consumeRateLimit, pruneRateLimits, resetRateLimit } from "@/lib/auth/rate-limit";
 import { emailKey, loginPairKey } from "@/lib/auth/rate-limit-core";
 import { startSession } from "@/lib/auth/session";
-import { createUser, findUserForLogin } from "@/lib/auth/users";
+import { createUser, findUserForLogin, writeAuthAudit } from "@/lib/auth/users";
+import { findReferrerIdByCode } from "@/lib/purchase/referral";
 import { loginAction, registerAction } from "./auth";
 
 const REAL_IP = "198.51.100.77";
@@ -34,6 +36,16 @@ const savedEnv: Record<string, string | undefined> = {};
 
 function requestHeaders(h: Record<string, string>) {
   vi.mocked(headers).mockResolvedValue(new Headers(h) as unknown as Awaited<ReturnType<typeof headers>>);
+}
+/** cookie ของคำขอ (จำลอง store ของ next/headers เท่าที่ action ใช้) — คืน Map เพื่อดูว่าอะไรถูกลบ */
+function requestCookies(initial: Record<string, string> = {}): Map<string, string> {
+  const jar = new Map(Object.entries(initial));
+  vi.mocked(cookies).mockResolvedValue({
+    get: (name: string) => (jar.has(name) ? { name, value: jar.get(name)! } : undefined),
+    has: (name: string) => jar.has(name),
+    delete: (name: string) => void jar.delete(name),
+  } as unknown as Awaited<ReturnType<typeof cookies>>);
+  return jar;
 }
 function form(fields: Record<string, string>): FormData {
   const fd = new FormData();
@@ -54,12 +66,15 @@ beforeEach(() => {
   }
   process.env.TRUSTED_PROXY_HOPS = "1";
   requestHeaders({ "x-forwarded-for": `203.0.113.5, ${REAL_IP}` });
+  requestCookies();
   for (const fn of [consumeRateLimit, consumeIpRateLimit]) vi.mocked(fn).mockReset().mockResolvedValue({ allowed: true });
   for (const fn of [resetRateLimit, pruneRateLimits, startSession]) vi.mocked(fn).mockReset().mockResolvedValue(undefined);
   vi.mocked(hashPassword).mockReset().mockResolvedValue("scrypt$hash");
   vi.mocked(verifyPassword).mockReset().mockResolvedValue(false);
   vi.mocked(createUser).mockReset().mockResolvedValue({ id: "u1" });
   vi.mocked(findUserForLogin).mockReset().mockResolvedValue(null);
+  vi.mocked(writeAuthAudit).mockReset().mockResolvedValue(undefined);
+  vi.mocked(findReferrerIdByCode).mockReset().mockResolvedValue(null);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -134,6 +149,115 @@ describe("registerAction", () => {
     expect(state.fieldErrors?.email).toBe(authMessages.emailTaken);
     expect(startSession).not.toHaveBeenCalled();
     expect(JSON.stringify(state)).not.toContain(validRegistration.password);
+  });
+});
+
+describe("registerAction กับรหัสชวนเพื่อน (?ref=)", () => {
+  const REFERRER = "22222222-2222-4222-8222-222222222222";
+  const CODE = "A1B2C3D4E5";
+
+  it("รหัสถูกรูปแบบและมีอยู่จริง → บันทึกผู้ชวนตอนสร้างบัญชี (ครั้งเดียว) และยังไปหน้าสั่งซื้อแพ็กเกจที่เลือก", async () => {
+    vi.mocked(findReferrerIdByCode).mockResolvedValue(REFERRER);
+    const target = await redirectTarget(() =>
+      registerAction({ ok: false }, form({ ...validRegistration, package: "three_months", ref: ` ${CODE.toLowerCase()} ` })),
+    );
+    expect(target).toBe("/account/orders/new?package=three_months");
+    // รหัสถูกทำให้เป็นตัวพิมพ์ใหญ่และตัดช่องว่างก่อนค้น
+    expect(findReferrerIdByCode).toHaveBeenCalledWith(CODE);
+    expect(createUser).toHaveBeenCalledWith(expect.objectContaining({ email: "somchai@example.com", referredByUserId: REFERRER }));
+    expect(writeAuthAudit).toHaveBeenCalledWith("user.register", "u1", { referredByUserId: REFERRER });
+  });
+
+  it("รหัสที่ไม่มีอยู่จริง → สมัครได้ตามปกติ ไม่มีผู้ชวน และคำตอบไม่บอกว่ารหัสผิด", async () => {
+    vi.mocked(findReferrerIdByCode).mockResolvedValue(null);
+    const target = await redirectTarget(() => registerAction({ ok: false }, form({ ...validRegistration, ref: CODE })));
+    expect(target).toBe("/account");
+    expect(createUser).toHaveBeenCalledWith(expect.objectContaining({ referredByUserId: null }));
+    expect(writeAuthAudit).toHaveBeenCalledWith("user.register", "u1", undefined);
+  });
+
+  it.each(["", "abc", "A1B2C3D4E", "A1B2C3D4E5F", "ZZZZZZZZZZ", "A1B2-C3D4E5", "' or 1=1 --", "x".repeat(500)])(
+    "รหัสผิดรูปแบบ %j → ไม่ค้นฐานข้อมูลเลย สมัครได้ตามปกติ",
+    async (ref) => {
+      expect(await redirectTarget(() => registerAction({ ok: false }, form({ ...validRegistration, ref })))).toBe("/account");
+      expect(findReferrerIdByCode).not.toHaveBeenCalled();
+      expect(createUser).toHaveBeenCalledWith(expect.objectContaining({ referredByUserId: null }));
+    },
+  );
+
+  it("ค้นรหัสหลังผ่าน rate limit ทั้งสองด่านและหลังตรวจฟอร์มเท่านั้น (เอาไปไล่เดารหัสถี่ๆ ไม่ได้)", async () => {
+    vi.mocked(findReferrerIdByCode).mockResolvedValue(REFERRER);
+    // เกินเพดานคำขอดิบ
+    vi.mocked(consumeIpRateLimit).mockResolvedValueOnce({ allowed: false });
+    await registerAction({ ok: false }, form({ ...validRegistration, ref: CODE }));
+    // เกินเพดานสมัครจริง
+    vi.mocked(consumeIpRateLimit).mockResolvedValueOnce({ allowed: true }).mockResolvedValueOnce({ allowed: false });
+    await registerAction({ ok: false }, form({ ...validRegistration, ref: CODE }));
+    // กรอกฟอร์มผิด
+    const invalid = await registerAction({ ok: false }, form({ ...validRegistration, password: "short", ref: CODE }));
+    expect(invalid.fieldErrors?.password).toBe(authMessages.passwordTooShort);
+    expect(findReferrerIdByCode).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
+  });
+
+  it("อีเมลซ้ำ → ไม่มีอะไรถูกบันทึก (ผู้ใช้เดิมเปลี่ยนผู้ชวนด้วยการสมัครซ้ำไม่ได้)", async () => {
+    vi.mocked(findReferrerIdByCode).mockResolvedValue(REFERRER);
+    vi.mocked(createUser).mockResolvedValue(null);
+    const state = await registerAction({ ok: false }, form({ ...validRegistration, ref: CODE }));
+    expect(state.fieldErrors?.email).toBe(authMessages.emailTaken);
+    expect(writeAuthAudit).not.toHaveBeenCalled();
+    expect(startSession).not.toHaveBeenCalled();
+  });
+
+  describe("รหัสที่ proxy จำไว้ใน cookie (เพื่อนเปิดลิงก์ชวนแล้วไปหน้าอื่นก่อนสมัคร)", () => {
+    const OTHER_CODE = "0F0F0F0F0F";
+
+    it("ฟอร์มไม่มีรหัส → ใช้รหัสจาก cookie บันทึกผู้ชวน แล้วลบ cookie เมื่อสมัครสำเร็จ (แพ็กเกจที่เลือกยังอยู่)", async () => {
+      vi.mocked(findReferrerIdByCode).mockResolvedValue(REFERRER);
+      const jar = requestCookies({ [REFERRAL_COOKIE_NAME]: CODE, other: "keep" });
+      const target = await redirectTarget(() =>
+        registerAction({ ok: false }, form({ ...validRegistration, package: "three_months" })),
+      );
+      expect(target).toBe("/account/orders/new?package=three_months");
+      expect(findReferrerIdByCode).toHaveBeenCalledWith(CODE);
+      expect(createUser).toHaveBeenCalledWith(expect.objectContaining({ referredByUserId: REFERRER }));
+      expect([...jar.keys()]).toEqual(["other"]);
+    });
+
+    it("ฟอร์มมีรหัส (ลิงก์ที่เพิ่งเปิด) → ใช้รหัสของฟอร์ม ไม่ใช่ของ cookie", async () => {
+      vi.mocked(findReferrerIdByCode).mockResolvedValue(REFERRER);
+      const jar = requestCookies({ [REFERRAL_COOKIE_NAME]: OTHER_CODE });
+      await redirectTarget(() => registerAction({ ok: false }, form({ ...validRegistration, ref: CODE })));
+      expect(findReferrerIdByCode).toHaveBeenCalledTimes(1);
+      expect(findReferrerIdByCode).toHaveBeenCalledWith(CODE);
+      expect(jar.size).toBe(0);
+    });
+
+    it.each(["abc", "ZZZZZZZZZZ", "' or 1=1 --", "x".repeat(500)])(
+      "cookie ผิดรูปแบบ %j (ผู้ใช้แก้เอง) → ไม่ค้นฐานข้อมูล สมัครได้ตามปกติ ไม่มีผู้ชวน",
+      async (value) => {
+        requestCookies({ [REFERRAL_COOKIE_NAME]: value });
+        expect(await redirectTarget(() => registerAction({ ok: false }, form(validRegistration)))).toBe("/account");
+        expect(findReferrerIdByCode).not.toHaveBeenCalled();
+        expect(createUser).toHaveBeenCalledWith(expect.objectContaining({ referredByUserId: null }));
+      },
+    );
+
+    it("สมัครไม่สำเร็จ (เกิน rate limit / กรอกผิด / อีเมลซ้ำ) → cookie ยังอยู่ให้ลองใหม่ และไม่ค้นรหัสก่อนผ่านด่าน", async () => {
+      vi.mocked(findReferrerIdByCode).mockResolvedValue(REFERRER);
+      const jar = requestCookies({ [REFERRAL_COOKIE_NAME]: CODE });
+      vi.mocked(consumeIpRateLimit).mockResolvedValueOnce({ allowed: false });
+      await registerAction({ ok: false }, form(validRegistration));
+      vi.mocked(consumeIpRateLimit).mockResolvedValueOnce({ allowed: true }).mockResolvedValueOnce({ allowed: false });
+      await registerAction({ ok: false }, form(validRegistration));
+      await registerAction({ ok: false }, form({ ...validRegistration, password: "short" }));
+      expect(findReferrerIdByCode).not.toHaveBeenCalled();
+
+      vi.mocked(createUser).mockResolvedValue(null);
+      const taken = await registerAction({ ok: false }, form(validRegistration));
+      expect(taken.fieldErrors?.email).toBe(authMessages.emailTaken);
+      expect(jar.get(REFERRAL_COOKIE_NAME)).toBe(CODE);
+    });
   });
 });
 

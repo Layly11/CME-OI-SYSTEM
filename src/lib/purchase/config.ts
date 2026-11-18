@@ -31,3 +31,9 @@ export function safeExternalUrl(v: string | undefined | null): string | null {
     return null;
   }
 }
+
+/** origin ของเว็บจาก NEXT_PUBLIC_SITE_URL (เช่น "https://example.com") — ไม่ได้ตั้ง/ไม่ใช่ http(s) คืน null */
+export function siteOriginFromEnv(v: string | undefined | null): string | null {
+  const url = safeExternalUrl(v);
+  return url === null ? null : new URL(url).origin;
+}

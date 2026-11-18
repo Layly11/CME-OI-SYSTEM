@@ -1,6 +1,14 @@
 /** ชื่อ cookie ของ session — ถ้าแก้ ต้องแก้ค่าเดียวกันใน src/proxy.ts ด้วย (proxy ไม่ import โมดูลร่วม) */
 export const SESSION_COOKIE_NAME = "cme_session";
 
+/**
+ * cookie จำรหัสชวนเพื่อน — src/proxy.ts ตั้งเมื่อมีคนเปิด /register?ref=CODE, registerAction อ่านเมื่อฟอร์มไม่มีรหัส และลบเมื่อสมัครสำเร็จ
+ * ถ้าแก้ชื่อหรืออายุ ต้องแก้ค่าเดียวกันใน src/proxy.ts ด้วย (proxy ไม่ import โมดูลร่วม — มีเทสคุมไว้)
+ * อายุ 7 วัน: นานพอให้เพื่อนกลับมาสมัครทีหลัง แต่ไม่ค้างในเบราว์เซอร์เครื่องที่ใช้ร่วมกันนานเกินไป
+ */
+export const REFERRAL_COOKIE_NAME = "cme_ref";
+export const REFERRAL_COOKIE_MAX_AGE_SECONDS = 7 * 24 * 60 * 60; // 604800
+
 /** อายุ session คงที่ 30 วัน (ไม่ต่ออายุอัตโนมัติ) */
 export const SESSION_TTL_DAYS = 30;
 export const SESSION_TTL_SECONDS = SESSION_TTL_DAYS * 24 * 60 * 60; // 2592000

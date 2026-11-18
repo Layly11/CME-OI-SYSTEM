@@ -312,7 +312,7 @@ describe.skipIf(!hasTestDb)("purchase กับ PostgreSQL จริง", () => 
     expect(await cancelOrder(s.b, first.id)).toEqual({ ok: false, reason: "order_not_found" });
     expect((await getOrder(s.a, first.id))?.status).toBe("pending_payment");
 
-    expect(await cancelOrder(s.a, first.id)).toEqual({ ok: true });
+    expect(await cancelOrder(s.a, first.id)).toEqual({ ok: true, freeClaimReleased: false });
     expect((await getOrder(s.a, first.id))?.status).toBe("cancelled");
     expect(await cancelOrder(s.a, first.id)).toEqual({ ok: false, reason: "order_not_cancellable" });
 
@@ -339,7 +339,7 @@ describe.skipIf(!hasTestDb)("purchase กับ PostgreSQL จริง", () => 
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) ids.push(((await createOrder(s.a, { packageId: s.yearly.id })) as { id: string }).id);
     expect(await createOrder(s.a, { packageId: s.yearly.id })).toEqual({ ok: false, reason: "too_many_open_orders" });
-    expect(await cancelOrder(s.a, ids[0])).toEqual({ ok: true });
+    expect(await cancelOrder(s.a, ids[0])).toEqual({ ok: true, freeClaimReleased: false });
     expect(await createOrder(s.a, { packageId: s.yearly.id })).toMatchObject({ ok: true, existing: false });
   });
 

@@ -17,6 +17,17 @@ export function isUniqueViolation(err: unknown, constraint?: string): boolean {
   return false;
 }
 
+/** PostgreSQL ยกเลิก transaction นี้เพราะ deadlock (40P01) — ทั้ง transaction ถูก rollback แล้ว ลองใหม่ทั้งก้อนได้ */
+export function isDeadlock(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; depth < 5 && cur && typeof cur === "object"; depth++) {
+    const e = cur as PgLikeError;
+    if (e.code === "40P01") return true;
+    cur = e.cause;
+  }
+  return false;
+}
+
 /**
  * สรุป error แบบสั้นสำหรับเขียน log — ไม่ใช้ `err.message` ของ drizzle ตรงๆ
  * เพราะ DrizzleQueryError ใส่ค่าพารามิเตอร์ของ query (อีเมล, hash) ไว้ในข้อความ

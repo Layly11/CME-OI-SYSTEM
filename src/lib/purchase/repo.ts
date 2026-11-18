@@ -2,9 +2,20 @@ import "server-only";
 import { and, asc, count, desc, eq, gte, inArray, isNull, ne, sql } from "drizzle-orm";
 import { getDb, schema } from "@/db";
 import { isUniqueViolation } from "@/lib/db-errors";
+import { REFERRAL_PAYMENT_PROVIDER } from "@/lib/payment/config";
+import { markOrderPaidInTx } from "@/lib/payment/mark-paid-tx";
+import { referralPaymentRef } from "@/lib/payment/provider";
 import type { PurchaseReason } from "./messages";
 import { isPartnerBrokerCode } from "./brokers";
 import { removeMt5AccountInTx, type Tx } from "./mt5-release";
+import { isFreeReferralPackage, packageDisplayName, packagePeriodText, packageTotalDays } from "./packages";
+import {
+  type FreeClaimBlock,
+  findFreeClaimByUser,
+  freeClaimBlockInTx,
+  hasAccountReceivedFree,
+  hasEnoughReferrals,
+} from "./referral";
 import {
   canAttachAccount,
   canOrderOnline,
@@ -33,15 +44,22 @@ export type PackageDto = {
   id: string;
   code: string;
   nameTh: string;
+  /** แพ็กเกจฟรีจากการชวนเพื่อน: เงื่อนไขการรับสิทธิ์ที่แสดงให้ลูกค้า */
   description: string | null;
+  /** อายุหลัก ไม่รวมวันแถม (null = ตลอดชีพ) */
   durationDays: number | null;
+  bonusDays: number;
+  /** อายุ license ที่ได้จริง = อายุหลัก + วันแถม (null = ตลอดชีพ) */
+  totalDays: number | null;
   priceThb: number | null;
+  /** สั่งผ่านเว็บได้ (ยังไม่ดูสิทธิ์ของผู้ใช้ — แพ็กเกจฟรีต้องผ่านเงื่อนไขชวนเพื่อนอีกชั้นใน createOrder) */
   orderable: boolean;
 };
 
 export type LicenseDto = {
   status: "pending" | "active" | "expired" | "suspended";
   expiresAt: string; // YYYY-MM-DD
+  /** ชื่อที่แสดงของแพ็กเกจล่าสุดของ license รวมวันแถม เช่น "3 เดือน แถม 15 วัน" (packageDisplayName) */
   packageName: string | null;
 };
 
@@ -60,7 +78,15 @@ export type OrderDto = {
   orderNo: number;
   status: OrderStatus;
   amountThb: number;
+  /**
+   * ชื่อที่แสดงของแพ็กเกจ รวมวันแถม เช่น "3 เดือน แถม 15 วัน" (packageDisplayName) — ชื่อเดียวกับที่หน้าแพ็กเกจ/ฟอร์มสั่งซื้อใช้
+   * อ่านจากแถวแพ็กเกจ "ปัจจุบัน" เหมือนอายุ license ที่จะได้ (ยังไม่มีการเก็บสำเนาไว้ที่คำสั่งซื้อ — ดูข้อจำกัดใน activation.ts)
+   */
   packageName: string;
+  /** ระยะเวลาที่แพ็กเกจให้ เช่น "90 วัน + แถม 15 วัน (รวม 105 วัน)" (packagePeriodText) — ค่าปัจจุบันของแพ็กเกจเช่นกัน */
+  packagePeriod: string;
+  /** code ของแพ็กเกจ — "free_referral" = แพ็กเกจฟรีจากการชวนเพื่อน (ไม่มีขั้นชำระเงิน) */
+  packageCode: string;
   createdAt: Date;
   mt5AccountId: string | null;
   accountNumber: string | null;
@@ -72,7 +98,10 @@ export type OrderDto = {
   /** โบรกเกอร์ที่เลือกหลังชำระเงิน (null = ยังไม่เลือก) */
   partnerBrokerCode: string | null;
   paidAt: Date | null;
-  /** ผู้ให้บริการที่บันทึกการชำระ (เช่น "mock") — ใช้ฝั่งเซิร์ฟเวอร์ตัดสินว่าคำสั่งซื้อจำลองเปิด license ได้หรือไม่ ไม่ต้องแสดงให้ลูกค้า */
+  /**
+   * ผู้ให้บริการที่บันทึกการชำระ (เช่น "mock") — ใช้ฝั่งเซิร์ฟเวอร์ตัดสินว่าคำสั่งซื้อจำลองเปิด license ได้หรือไม่ ไม่ต้องแสดงให้ลูกค้า
+   * "referral" = รับสิทธิ์แพ็กเกจฟรีจากการชวนเพื่อน (ไม่ใช่การชำระเงิน)
+   */
   paymentProvider: string | null;
   /**
    * license ที่คำสั่งซื้อนี้เปิด/ต่ออายุให้ (null = ยังไม่ได้เปิด) — สถานะและวันหมดอายุ "ปัจจุบัน" ของ license นั้น
@@ -86,9 +115,16 @@ async function audit(tx: Db | Tx, actorUserId: string, action: string, entity: s
   await tx.insert(schema.auditLogs).values({ actorUserId, action, entity, entityId, data: data ?? null });
 }
 
-/** ล็อกแถว user เพื่อให้การเช็คเพดาน (จำนวนบัญชี/คำสั่งซื้อค้าง) ของ user เดียวกันทำทีละรายการ */
+/**
+ * ล็อกแถว user เพื่อให้การเช็คเพดาน (จำนวนบัญชี/คำสั่งซื้อค้าง) และการรับ/คืนสิทธิ์แพ็กเกจฟรีของ user เดียวกันทำทีละรายการ
+ *
+ * ใช้ FOR NO KEY UPDATE (ไม่ใช่ FOR UPDATE): ยังกันกันเองระหว่างผู้เรียก lockUser ได้เหมือนเดิม
+ * แต่ไม่ขวาง FOR KEY SHARE ที่ PostgreSQL ขอเองตอน INSERT แถวที่มี foreign key ชี้มาที่ users (เช่น licenses.user_id ในขั้นเปิด license)
+ * FOR UPDATE ตรงนี้เคยทำให้ deadlock (40P01) จริง: ยกเลิกคำสั่งซื้อฟรีพร้อมกับการเปิด license ของคำสั่งซื้อเดียวกัน
+ * (ฝั่งนี้ถือ users รอ orders, ขั้นเปิด license ถือ orders รอ KEY SHARE ของ users) — ดูเทส "ไม่ deadlock" ใน referral.itest.ts
+ */
 async function lockUser(tx: Tx, userId: string) {
-  await tx.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, userId)).for("update");
+  await tx.select({ id: schema.users.id }).from(schema.users).where(eq(schema.users.id, userId)).for("no key update");
 }
 
 export async function listActivePackages(): Promise<PackageDto[]> {
@@ -103,6 +139,8 @@ export async function listActivePackages(): Promise<PackageDto[]> {
     nameTh: p.nameTh,
     description: p.description,
     durationDays: p.durationDays,
+    bonusDays: p.bonusDays,
+    totalDays: packageTotalDays(p),
     priceThb: p.priceThb,
     orderable: canOrderOnline(p),
   }));
@@ -128,7 +166,9 @@ export async function listMt5AccountsWithLicense(userId: string): Promise<Mt5Acc
       mt5AccountId: schema.licenses.mt5AccountId,
       status: schema.licenses.status,
       expiresAt: schema.licenses.expiresAt,
-      packageName: schema.packages.nameTh,
+      packageNameTh: schema.packages.nameTh,
+      packageDurationDays: schema.packages.durationDays,
+      packageBonusDays: schema.packages.bonusDays,
     })
     .from(schema.licenses)
     .leftJoin(schema.packages, eq(schema.licenses.packageId, schema.packages.id))
@@ -144,7 +184,19 @@ export async function listMt5AccountsWithLicense(userId: string): Promise<Mt5Acc
   const latest = new Map<string, LicenseDto>();
   for (const l of licenses) {
     if (!latest.has(l.mt5AccountId)) {
-      latest.set(l.mt5AccountId, { status: l.status, expiresAt: l.expiresAt, packageName: l.packageName });
+      latest.set(l.mt5AccountId, {
+        status: l.status,
+        expiresAt: l.expiresAt,
+        // license ที่ไม่มีแพ็กเกจ (เช่นรายชื่อเดิมที่ import มา) → null
+        packageName:
+          l.packageNameTh === null
+            ? null
+            : packageDisplayName({
+                nameTh: l.packageNameTh,
+                durationDays: l.packageDurationDays,
+                bonusDays: l.packageBonusDays ?? 0,
+              }),
+      });
     }
   }
   return accounts.map((a) => ({ ...a, license: latest.get(a.id) ?? null }));
@@ -155,7 +207,10 @@ const orderColumns = {
   orderNo: schema.orders.orderNo,
   status: schema.orders.status,
   amountThb: schema.orders.amountThb,
-  packageName: schema.packages.nameTh,
+  packageNameTh: schema.packages.nameTh,
+  packageDurationDays: schema.packages.durationDays,
+  packageBonusDays: schema.packages.bonusDays,
+  packageCode: schema.packages.code,
   createdAt: schema.orders.createdAt,
   mt5AccountId: schema.orders.mt5AccountId,
   accountNumber: schema.mt5Accounts.accountNumber,
@@ -171,15 +226,29 @@ const orderColumns = {
   activatedLicenseExpiresAt: schema.licenses.expiresAt,
 };
 
-type OrderRow = Omit<OrderDto, "hasSlip" | "activatedLicense"> & {
+type OrderRow = Omit<OrderDto, "hasSlip" | "activatedLicense" | "packageName" | "packagePeriod"> & {
   slipKey: string | null;
+  packageNameTh: string;
+  packageDurationDays: number | null;
+  packageBonusDays: number;
   activatedLicenseStatus: LicenseDto["status"] | null;
   activatedLicenseExpiresAt: string | null;
 };
 
-function toOrderDto({ slipKey, activatedLicenseStatus, activatedLicenseExpiresAt, ...row }: OrderRow): OrderDto {
+function toOrderDto({
+  slipKey,
+  packageNameTh,
+  packageDurationDays,
+  packageBonusDays,
+  activatedLicenseStatus,
+  activatedLicenseExpiresAt,
+  ...row
+}: OrderRow): OrderDto {
+  const pkg = { nameTh: packageNameTh, durationDays: packageDurationDays, bonusDays: packageBonusDays };
   return {
     ...row,
+    packageName: packageDisplayName(pkg),
+    packagePeriod: packagePeriodText(pkg),
     // slipKey ไม่ออกไปถึงหน้าเว็บ — ส่งแค่ว่ามีสลิปหรือไม่
     hasSlip: slipKey !== null,
     activatedLicense:
@@ -379,6 +448,11 @@ export type SubmitAccountResult =
  * ib_status ของบัญชีคงเป็น unverified (ไม่มีอะไรตรวจ IB ในรอบนี้)
  *
  * ฟังก์ชันนี้ไม่เปิด license เอง — ผู้เรียกต้องเรียกขั้นเปิด license หลัง transaction นี้ commit (fulfilOrder ใน src/lib/license/fulfil.ts — ดู actions/purchase.ts)
+ *
+ * ข้อจำกัดที่รับทราบแล้ว (ยังไม่แก้ — ต้องปิดก่อนเปิดระบบจริง ดู README "ก่อนเปิดระบบจริง" ข้อ 3):
+ * สัญญาณ "ใครเป็นเจ้าของเลข" มีแค่ unique index ของ mt5_accounts — ใครกรอกก่อนได้เลขนั้น และคำสั่งซื้อแพ็กเกจฟรีจากการชวนเพื่อน
+ * เป็น "ชำระแล้ว" โดยไม่เสียเงิน จึงใช้จองเลขของคนอื่นได้ฟรี (รวมเลขของลูกค้าเดิมที่ยังไม่ถูก import จาก Firebase)
+ * เจ้าของจริงจะได้ "taken" และยังไม่มีเครื่องมือคืนเลข: deleteMt5Account / admin:release-mt5 ปฏิเสธบัญชีที่มีแถว license ทุกสถานะ
  */
 export async function submitAccountForOrder(
   userId: string,
@@ -451,10 +525,26 @@ export async function submitAccountForOrder(
 }
 
 export type CreateOrderResult =
-  | { ok: true; id: string; existing: false }
-  /** บัญชีนี้มีคำสั่งซื้อค้างอยู่แล้ว — samePackage บอกว่าเป็นแพ็กเกจเดียวกับที่เพิ่งเลือกหรือไม่ */
+  /**
+   * freeClaim: true = แพ็กเกจฟรีจากการชวนเพื่อน — คำสั่งซื้อถูกบันทึกเป็น "ชำระแล้ว" (provider "referral") ใน transaction เดียวกันแล้ว
+   * ผู้เรียกต้องเรียก fulfilOrder หลัง commit (เปิด license ทันทีถ้าคำสั่งซื้อมีบัญชี MT5 มาแต่แรก)
+   */
+  | { ok: true; id: string; existing: false; freeClaim?: true }
+  /**
+   * ไม่ได้สร้างรายการใหม่ — samePackage บอกว่ารายการเดิมเป็นแพ็กเกจเดียวกับที่เพิ่งเลือกหรือไม่
+   * (บัญชีนี้มีคำสั่งซื้อค้างอยู่แล้ว หรือผู้ใช้รับสิทธิ์แพ็กเกจฟรีไว้แล้วแต่ยังเปิด license ไม่เสร็จ)
+   */
   | { ok: true; id: string; existing: true; samePackage: boolean }
-  | Fail<"package_unavailable" | "account_not_found" | "too_many_open_orders" | "lifetime_active" | "license_suspended">;
+  | Fail<
+      | "package_unavailable"
+      | "account_not_found"
+      | "too_many_open_orders"
+      | "lifetime_active"
+      | "license_suspended"
+      | "free_referral_required"
+      | "free_already_claimed"
+      | "free_account_used"
+    >;
 
 /** บัญชีนี้มี license ตลอดชีพที่ใช้งานอยู่หรือไม่ (ปี ≥ 2099 = ตลอดชีพ ตรงกับ isLifetimeExpiry) */
 async function hasActiveLifetimeLicense(db: Db | Tx, mt5AccountId: string): Promise<boolean> {
@@ -497,6 +587,32 @@ export async function getAccountLicenseBlock(mt5AccountId: string): Promise<"lic
   return null;
 }
 
+async function isFreeOrderPackage(db: Db | Tx, packageId: string): Promise<boolean> {
+  const [pkg] = await db
+    .select({ code: schema.packages.code })
+    .from(schema.packages)
+    .where(eq(schema.packages.id, packageId))
+    .limit(1);
+  return pkg !== undefined && isFreeReferralPackage(pkg);
+}
+
+/**
+ * คำสั่งซื้อแพ็กเกจฟรีที่รับสิทธิ์แล้วและมีบัญชี MT5 แล้ว: กติกาของแพ็กเกจฟรียังผ่านหรือไม่ (null = ผ่าน)
+ * อ่านเพื่อแสดงผลเท่านั้น (ไม่ล็อกแถว) — ด่านจริงอยู่ในขั้นเปิด license (activateInTx) ซึ่งใช้ freeClaimBlockInTx ตัวเดียวกัน
+ * ผู้เรียกต้องส่งคำสั่งซื้อที่ตรวจความเป็นเจ้าของแล้ว (getOrder / listOrders)
+ */
+export async function getFreeClaimBlock(order: { id: string; mt5AccountId: string }): Promise<FreeClaimBlock | null> {
+  const db = getDb();
+  const [row] = await db
+    .select({ userId: schema.orders.userId })
+    .from(schema.orders)
+    .where(eq(schema.orders.id, order.id))
+    .limit(1);
+  if (!row) return "free_claim_invalid";
+  const result = await freeClaimBlockInTx(db, { id: order.id, userId: row.userId }, order.mt5AccountId);
+  return result.block;
+}
+
 async function findOpenOrderForAccount(
   db: Db | Tx,
   userId: string,
@@ -523,6 +639,12 @@ async function findOpenOrderForAccount(
  * โดยเฉพาะเมื่อ samePackage เป็น false (เลือกแพ็กเกจใหม่ แต่ได้คำสั่งซื้อเดิมของอีกแพ็กเกจ)
  * บัญชีที่มี license ตลอดชีพใช้งานอยู่ → lifetime_active (ไม่มีอะไรให้ต่ออายุ)
  * บัญชีที่มี license ถูกระงับ → license_suspended (ต้องผ่านทีมงาน)
+ *
+ * แพ็กเกจฟรีจากการชวนเพื่อน (code free_referral, ราคา 0): ไม่มีขั้นชำระเงิน — ตรวจสิทธิ์ที่นี่ (ดูกติกาใน ./referral.ts)
+ * แล้วสร้างคำสั่งซื้อ + แถว referral_claims + บันทึก "ชำระแล้ว" ด้วย provider "referral" (markOrderPaidInTx) ใน transaction เดียว
+ * - ยังไม่มีเพื่อนสมัคร → free_referral_required, ใช้สิทธิ์ไปแล้ว → free_already_claimed, บัญชีนี้เคยได้ฟรีแล้ว → free_account_used
+ * - รับสิทธิ์ไว้แล้วแต่ยังไม่ได้เปิด license (กดซ้ำ / กลับมาใหม่) → คืนคำสั่งซื้อเดิม (existing: true) ไม่สร้างซ้ำ
+ * คำขอที่สร้างเอง (ไม่ผ่านฟอร์ม) ผ่านด่านเดียวกันนี้ — หน้าเว็บแค่ปิดตัวเลือกไว้ล่วงหน้า
  */
 export async function createOrder(
   userId: string,
@@ -546,6 +668,32 @@ export async function createOrder(
         if (await hasActiveLifetimeLicense(tx, account.id)) return { ok: false, reason: "lifetime_active" };
         const open = await findOpenOrderForAccount(tx, userId, account.id);
         if (open) return { ok: true, id: open.id, existing: true, samePackage: open.packageId === pkg.id };
+      }
+
+      if (isFreeReferralPackage(pkg)) {
+        // lockUser ด้านบนทำให้คำขอของผู้ใช้เดียวกันเข้ามาทีละรายการ — กดซ้ำ/สองแท็บจึงเห็นแถวสิทธิ์ของคำขอแรกเสมอ
+        // (referral_claims.user_id unique เป็นด่านสุดท้ายของฐานข้อมูล)
+        const claim = await findFreeClaimByUser(tx, userId);
+        if (claim) {
+          if (claim.activated) return { ok: false, reason: "free_already_claimed" };
+          return { ok: true, id: claim.orderId, existing: true, samePackage: true };
+        }
+        if (!(await hasEnoughReferrals(tx, userId))) return { ok: false, reason: "free_referral_required" };
+        if (input.mt5AccountId && (await hasAccountReceivedFree(tx, input.mt5AccountId))) {
+          return { ok: false, reason: "free_account_used" };
+        }
+
+        // ไม่นับเพดานคำสั่งซื้อค้าง: รายการนี้ไม่ค้าง "รอชำระ" (เป็นชำระแล้วใน transaction นี้เลย)
+        const [order] = await tx
+          .insert(schema.orders)
+          .values({ userId, packageId: pkg.id, mt5AccountId: input.mt5AccountId ?? null, amountThb: 0 })
+          .returning({ id: schema.orders.id });
+        await tx.insert(schema.referralClaims).values({ userId, orderId: order.id });
+        await audit(tx, userId, "order.create", "order", order.id, { packageId: pkg.id, amountThb: 0, freeClaim: true });
+        const paid = await markOrderPaidInTx(tx, order.id, REFERRAL_PAYMENT_PROVIDER, referralPaymentRef(order.id));
+        // เพิ่งสร้างใน transaction นี้เอง จึงต้องบันทึกได้เสมอ — ไม่ได้ = ยกเลิกทั้ง transaction (ไม่มีคำสั่งซื้อฟรีที่ค้างรอชำระ)
+        if (!paid.ok) throw new Error("createOrder: บันทึกสิทธิ์แพ็กเกจฟรีไม่สำเร็จ (" + paid.reason + ")");
+        return { ok: true, id: order.id, existing: false, freeClaim: true };
       }
 
       const [{ n }] = await tx
@@ -572,6 +720,12 @@ export async function createOrder(
       const open = await findOpenOrderForAccount(getDb(), userId, input.mt5AccountId);
       if (open) return { ok: true, id: open.id, existing: true, samePackage: open.packageId === input.packageId };
     }
+    // ด่านสุดท้ายของ "แพ็กเกจฟรีครั้งเดียวต่อผู้ใช้": ฐานข้อมูลปฏิเสธแถวสิทธิ์ที่สอง (transaction นี้ถูกยกเลิกทั้งก้อน)
+    if (isUniqueViolation(err, "referral_claims_user_id_unique")) {
+      const claim = await findFreeClaimByUser(getDb(), userId);
+      if (claim && !claim.activated) return { ok: true, id: claim.orderId, existing: true, samePackage: true };
+      return { ok: false, reason: "free_already_claimed" };
+    }
     throw err;
   }
 }
@@ -585,10 +739,12 @@ export type AttachResult =
       | "account_has_open_order"
       | "lifetime_active"
       | "license_suspended"
+      | "free_account_used"
     >;
 
 /**
  * ผูกบัญชี MT5 ที่ลูกค้ามีอยู่แล้วเข้ากับคำสั่งซื้อ (ต่ออายุ/ใช้บัญชีเดิม)
+ * คำสั่งซื้อแพ็กเกจฟรี: บัญชีที่เคยได้แพ็กเกจฟรีแล้วผูกไม่ได้ (free_account_used) — ขั้นเปิด license ตรวจซ้ำเป็นด่านจริง
  * ไม่เปิด license เอง — ถ้าคำสั่งซื้อชำระแล้ว ผู้เรียกต้องเรียกขั้นเปิด license หลัง commit (fulfilOrder ใน src/lib/license/fulfil.ts — ดู actions/purchase.ts)
  */
 export async function attachMt5AccountToOrder(
@@ -601,7 +757,12 @@ export async function attachMt5AccountToOrder(
       await lockUser(tx, userId);
 
       const [order] = await tx
-        .select({ id: schema.orders.id, status: schema.orders.status, mt5AccountId: schema.orders.mt5AccountId })
+        .select({
+          id: schema.orders.id,
+          status: schema.orders.status,
+          mt5AccountId: schema.orders.mt5AccountId,
+          packageId: schema.orders.packageId,
+        })
         .from(schema.orders)
         .where(and(eq(schema.orders.id, orderId), eq(schema.orders.userId, userId)))
         .for("update");
@@ -616,6 +777,9 @@ export async function attachMt5AccountToOrder(
       if (!account) return { ok: false, reason: "account_not_found" };
       if (await hasSuspendedLicense(tx, account.id)) return { ok: false, reason: "license_suspended" };
       if (await hasActiveLifetimeLicense(tx, account.id)) return { ok: false, reason: "lifetime_active" };
+      if ((await isFreeOrderPackage(tx, order.packageId)) && (await hasAccountReceivedFree(tx, account.id))) {
+        return { ok: false, reason: "free_account_used" };
+      }
 
       if (OPEN.includes(order.status)) {
         const [other] = await tx
@@ -642,35 +806,50 @@ export async function attachMt5AccountToOrder(
   }
 }
 
-export type CancelOrderResult = { ok: true } | Fail<"order_not_found" | "order_not_cancellable">;
+export type CancelOrderResult = { ok: true; freeClaimReleased: boolean } | Fail<"order_not_found" | "order_not_cancellable">;
 
 /**
- * ลูกค้ายกเลิกคำสั่งซื้อของตัวเอง — ได้เฉพาะสถานะ pending_payment (เงื่อนไขอยู่ใน WHERE ของ UPDATE)
- * ใช้เมื่อเลือกแพ็กเกจผิด หรือมีคำสั่งซื้อค้างที่ไม่ใช้แล้วจนชนเพดาน 5 รายการ
+ * ลูกค้ายกเลิกคำสั่งซื้อของตัวเอง
+ * - สถานะ pending_payment: เลือกแพ็กเกจผิด หรือมีคำสั่งซื้อค้างที่ไม่ใช้แล้วจนชนเพดาน 5 รายการ
+ * - แพ็กเกจฟรีจากการชวนเพื่อนที่รับสิทธิ์แล้ว (paid ด้วย provider "referral") แต่ "ยังไม่ได้เปิด license": ไม่มีเงินเกี่ยวข้อง
+ *   ยกเลิกแล้วลบแถว referral_claims = คืนสิทธิ์ให้รับใหม่ได้ (freeClaimReleased) เปิด license แล้วยกเลิกไม่ได้ — สิทธิ์ถูกใช้ไปแล้ว
+ * คำสั่งซื้อที่ชำระเงินจริงแล้วยกเลิกเองไม่ได้ (มีเงินเกี่ยวข้อง ต้องผ่านทีมงาน)
+ *
+ * ล็อกแถวคำสั่งซื้อ (FOR UPDATE) — ขั้นเปิด license ล็อกแถวเดียวกันก่อนทำงาน การยกเลิกกับการเปิดจึงเกิดทีละอย่าง
+ * (ฝั่งนี้ล็อก user ก่อนแล้วรอแถวคำสั่งซื้อ ขั้นเปิด license ถือแถวคำสั่งซื้อแล้ว INSERT licenses ซึ่งขอ KEY SHARE ของ user:
+ * ไม่เป็นวงเพราะ lockUser ใช้ FOR NO KEY UPDATE — ดูคำอธิบายที่ lockUser)
  */
 export async function cancelOrder(userId: string, orderId: string): Promise<CancelOrderResult> {
   return getDb().transaction(async (tx): Promise<CancelOrderResult> => {
-    const updated = await tx
-      .update(schema.orders)
-      .set({ status: "cancelled" })
-      .where(
-        and(
-          eq(schema.orders.id, orderId),
-          eq(schema.orders.userId, userId),
-          eq(schema.orders.status, "pending_payment"),
-        ),
-      )
-      .returning({ id: schema.orders.id });
-    if (updated[0]) {
-      await audit(tx, userId, "order.cancel", "order", orderId);
-      return { ok: true };
-    }
+    // ลำดับล็อก user → คำสั่งซื้อ (เหมือน createOrder): การรับสิทธิ์ใหม่ของผู้ใช้เดียวกันรอให้การยกเลิกนี้จบก่อน
+    await lockUser(tx, userId);
     const [order] = await tx
-      .select({ id: schema.orders.id })
+      .select({ id: schema.orders.id, status: schema.orders.status, paymentProvider: schema.orders.paymentProvider })
       .from(schema.orders)
       .where(and(eq(schema.orders.id, orderId), eq(schema.orders.userId, userId)))
-      .limit(1);
-    return { ok: false, reason: order ? "order_not_cancellable" : "order_not_found" };
+      .for("update");
+    if (!order) return { ok: false, reason: "order_not_found" };
+
+    const freeClaim = order.status === "paid" && order.paymentProvider === REFERRAL_PAYMENT_PROVIDER;
+    if (order.status !== "pending_payment" && !freeClaim) return { ok: false, reason: "order_not_cancellable" };
+    if (freeClaim) {
+      const [activation] = await tx
+        .select({ id: schema.licenseActivations.id })
+        .from(schema.licenseActivations)
+        .where(eq(schema.licenseActivations.orderId, order.id))
+        .limit(1);
+      if (activation) return { ok: false, reason: "order_not_cancellable" };
+    }
+
+    await tx.update(schema.orders).set({ status: "cancelled" }).where(eq(schema.orders.id, order.id));
+    // คืนสิทธิ์: ลบได้เฉพาะแถวที่ยังไม่ถูกใช้เปิด license (activated_at ว่าง) — แถวที่ใช้แล้วไม่มีทางถูกลบจากที่นี่
+    const released = await tx
+      .delete(schema.referralClaims)
+      .where(and(eq(schema.referralClaims.orderId, order.id), isNull(schema.referralClaims.activatedAt)))
+      .returning({ id: schema.referralClaims.id });
+    const freeClaimReleased = released.length > 0;
+    await audit(tx, userId, "order.cancel", "order", order.id, freeClaimReleased ? { freeClaimReleased: true } : undefined);
+    return { ok: true, freeClaimReleased };
   });
 }
 

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useActionState } from "react";
 import { createOrderAction, type OrderFormState } from "@/app/actions/purchase";
 import { Field, Notice, Select } from "@/components/form";
@@ -12,7 +13,21 @@ export type OrderFormPackage = {
   period: string;
   /** null = ยังไม่เปิดขายออนไลน์ (แสดง "สอบถามราคา") */
   price: string | null;
+  /**
+   * แพ็กเกจฟรีจากการชวนเพื่อน: เงื่อนไข + ความคืบหน้าของผู้ใช้ — selectable=false คือยังรับไม่ได้ (ปิดตัวเลือกไว้)
+   * เป็นแค่การแสดงผล: เซิร์ฟเวอร์ตรวจสิทธิ์ซ้ำใน createOrder เสมอ
+   */
+  free?: {
+    condition: string | null;
+    progress: string;
+    note: string;
+    selectable: boolean;
+    /** ทางไปต่อ: ยังชวนเพื่อนไม่ครบ → หน้าบัญชีของฉัน (ลิงก์ชวนเพื่อน), รับสิทธิ์ไว้แล้วแต่ยังไม่เสร็จ → คำสั่งซื้อนั้น */
+    link: { href: string; label: string } | null;
+  };
 };
+
+const canSelect = (p: OrderFormPackage) => p.price !== null && (p.free?.selectable ?? true);
 
 export type OrderFormAccount = { id: string; accountNumber: string; brokerServer: string; label: string | null };
 
@@ -31,7 +46,7 @@ export function OrderForm({
 }) {
   const [state, formAction] = useActionState(createOrderAction, initialState);
   const errors = state.fieldErrors ?? {};
-  const anyOrderable = packages.some((p) => p.price !== null);
+  const anyOrderable = packages.some(canSelect);
   const selectedPackage = state.values?.packageId || defaultPackageId || "";
   const selectedAccount = state.values?.mt5AccountId ?? defaultAccountId ?? "";
 
@@ -45,19 +60,36 @@ export function OrderForm({
           {packages.map((p) => (
             <label
               key={p.id}
-              className={`flex items-center gap-3 rounded-lg border border-rule bg-surface px-4 py-3 ${p.price === null ? "opacity-70" : "cursor-pointer has-[:checked]:border-ink"}`}
+              className={`flex items-center gap-3 rounded-lg border border-rule bg-surface px-4 py-3 ${canSelect(p) ? "cursor-pointer has-[:checked]:border-ink" : p.free ? "" : "opacity-70"}`}
+              data-free-package={p.free ? (p.free.selectable ? "eligible" : "locked") : undefined}
             >
               <input
                 type="radio"
                 name="packageId"
                 value={p.id}
                 required
-                disabled={p.price === null}
-                defaultChecked={p.price !== null && p.id === selectedPackage}
+                disabled={!canSelect(p)}
+                defaultChecked={canSelect(p) && p.id === selectedPackage}
               />
               <span className="flex-1">
                 <span className="block text-[15.5px] font-medium text-ink">{p.name}</span>
                 <span className="block text-[13.5px] text-muted">{p.period}</span>
+                {p.free ? (
+                  <span className="mt-1 block text-[13.5px] text-text">
+                    {p.free.condition ? <span className="block">เงื่อนไข: {p.free.condition}</span> : null}
+                    <span className="block">
+                      <span className="tabular font-medium text-ink" data-testid="free-progress">
+                        {p.free.progress}
+                      </span>{" "}
+                      · {p.free.note}{" "}
+                      {p.free.link ? (
+                        <Link href={p.free.link.href} className="text-link underline underline-offset-4" data-testid="free-link">
+                          {p.free.link.label}
+                        </Link>
+                      ) : null}
+                    </span>
+                  </span>
+                ) : null}
               </span>
               <span className="tabular text-[15px] font-medium text-ink">{p.price ?? "สอบถามราคา"}</span>
             </label>
@@ -83,11 +115,11 @@ export function OrderForm({
         <div className="mt-2">
           <Field
             label="บัญชี MT5"
-            hint="บัญชีใหม่: ชำระเงินก่อน แล้วเลือกโบรกเกอร์และกรอกเลขบัญชีในหน้าคำสั่งซื้อ · ต่ออายุ: เลือกบัญชีเดิม ชำระแล้ว license ต่ออายุทันที"
+            hint="บัญชีใหม่: สร้างคำสั่งซื้อก่อน แล้วเลือกโบรกเกอร์และกรอกเลขบัญชีในหน้าคำสั่งซื้อ · ต่ออายุ: เลือกบัญชีเดิม license ต่ออายุทันทีเมื่อคำสั่งซื้อชำระแล้ว (แพ็กเกจฟรีไม่มีขั้นชำระเงิน)"
             error={errors.mt5AccountId}
           >
             <Select name="mt5AccountId" defaultValue={selectedAccount}>
-              <option value="">บัญชีใหม่ (กรอกเลขบัญชีหลังชำระเงิน)</option>
+              <option value="">บัญชีใหม่ (กรอกเลขบัญชีในหน้าคำสั่งซื้อ)</option>
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.accountNumber} · {a.brokerServer}

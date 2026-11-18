@@ -29,6 +29,7 @@ const APP_TABLES = [
   "sessions",
   "license_file_publications",
   "download_assets",
+  "referral_claims",
   "license_activations",
   "licenses",
   "orders",

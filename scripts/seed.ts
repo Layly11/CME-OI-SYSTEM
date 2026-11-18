@@ -1,44 +1,34 @@
 /**
- * ใส่ข้อมูลตั้งต้น: แพ็กเกจ 4 แบบ (+ แพ็กเกจ IB)
- * รัน: npm run db:seed  (ต้องมี DATABASE_URL ใน .env.local และรัน npm run db:migrate ก่อน)
+ * ตั้งรายการแพ็กเกจในตาราง packages ให้ตรงกับที่ขายจริง (PACKAGE_LINEUP ใน src/lib/purchase/package-lineup.ts):
+ *   ฟรี 1 เดือน (ชวนเพื่อน 1 คน) · 3 เดือน แถม 15 วัน 3,000 บาท · 6 เดือน แถม 30 วัน 6,000 บาท · 1 ปี แถม 60 วัน 11,000 บาท
+ *   แพ็กเกจเดิมที่เลิกขาย (รายเดือน, ตลอดชีพ) และแพ็กเกจ IB ถูกปิด (is_active = false) ไม่ถูกลบ
  *
- * ราคา (price_thb) ยังเป็น null จนกว่าลูกค้าจะยืนยัน — หน้าเว็บจะแสดง "สอบถามราคา"
+ * รัน: npm run db:seed  (ต้องมี DATABASE_URL ใน .env.local หรือใน environment และรัน npm run db:migrate ก่อน)
+ * รันซ้ำได้ (idempotent) และใช้กับฐานข้อมูลที่มีรายการแพ็กเกจชุดเดิมอยู่แล้วได้: แก้เฉพาะตาราง packages แบบ upsert ตาม code
+ * ไม่แตะคำสั่งซื้อ/license/ผู้ใช้ — หน้าเว็บทุกหน้าอ่านรายการและราคาจากตารางนี้
  */
-import { getDb, schema } from "../src/db";
+import { asc } from "drizzle-orm";
+import { closeDb, getDb, schema } from "../src/db";
+import { applyPackageLineup } from "../src/lib/purchase/package-lineup";
 
 async function main() {
-  const db = getDb();
-  const rows: (typeof schema.packages.$inferInsert)[] = [
-    { code: "monthly", nameTh: "รายเดือน", durationDays: 30, priceThb: null, maxAccounts: 1, sortOrder: 1 },
-    { code: "six_months", nameTh: "6 เดือน", durationDays: 180, priceThb: null, maxAccounts: 1, sortOrder: 2 },
-    { code: "yearly", nameTh: "รายปี", durationDays: 365, priceThb: null, maxAccounts: 1, sortOrder: 3 },
-    { code: "lifetime", nameTh: "ตลอดชีพ", durationDays: null, priceThb: null, maxAccounts: 1, sortOrder: 4 },
-    {
-      code: "ib",
-      nameTh: "สำหรับลูกค้า IB",
-      description: "สำหรับบัญชีที่เปิดผ่าน IB ของผู้ให้บริการ (เงื่อนไขรอยืนยัน)",
-      durationDays: 30,
-      priceThb: 0,
-      maxAccounts: 1,
-      isActive: false,
-      sortOrder: 5,
-    },
-  ];
-
-  for (const r of rows) {
-    await db
-      .insert(schema.packages)
-      .values(r)
-      .onConflictDoUpdate({
-        target: schema.packages.code,
-        set: { nameTh: r.nameTh, durationDays: r.durationDays, maxAccounts: r.maxAccounts, sortOrder: r.sortOrder },
-      });
+  const count = await applyPackageLineup();
+  const rows = await getDb().select().from(schema.packages).orderBy(asc(schema.packages.sortOrder));
+  console.log(`seeded ${count} packages`);
+  for (const p of rows) {
+    const days = p.durationDays === null ? "ตลอดชีพ" : `${p.durationDays}+${p.bonusDays} วัน`;
+    const price = p.priceThb === null ? "ยังไม่ตั้งราคา" : `${p.priceThb} บาท`;
+    console.log(`  ${p.isActive ? "ขาย " : "ปิด "} ${p.code.padEnd(14)} ${days.padEnd(12)} ${price}  ${p.nameTh}`);
   }
-  console.log(`seeded ${rows.length} packages`);
-  process.exit(0);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main()
+  .then(() => 0)
+  .catch((e) => {
+    console.error(e);
+    return 1;
+  })
+  .then(async (code) => {
+    await closeDb().catch(() => {});
+    process.exit(code);
+  });

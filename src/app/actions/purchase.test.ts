@@ -367,6 +367,18 @@ describe("retryActivationAction", () => {
     expect(JSON.stringify(state)).not.toContain("storage down");
   });
 
+  it("แพ็กเกจฟรีจากการชวนเพื่อน (provider referral) ที่ยังไม่สำเร็จ → ข้อความที่ไม่พูดถึงการชำระเงิน", async () => {
+    vi.mocked(repo.getOrder).mockResolvedValue(order({ paymentProvider: "referral" }));
+    vi.mocked(fulfilOrder).mockResolvedValue({ activation: FULFILLED.activation, publish: { status: "failed", error: "storage down" } });
+    const state = await retryActivationAction(ORDER);
+    expect(state).toEqual({ ok: false, formError: purchaseMessages.activation_pending_free });
+    expect(state.formError).not.toMatch(/ชำระ/);
+    expect(state.formError).toContain("สิทธิ์แพ็กเกจฟรี");
+    // คำสั่งซื้อที่ชำระเงินจริง/จำลองยังได้ข้อความเดิม
+    vi.mocked(repo.getOrder).mockResolvedValue(order({ paymentProvider: "mock" }));
+    expect(await retryActivationAction(ORDER)).toEqual({ ok: false, formError: purchaseMessages.activation_pending });
+  });
+
   it("ขั้นเปิด license throw (ไม่ควรเกิด) → ข้อความระบบขัดข้อง", async () => {
     vi.mocked(fulfilOrder).mockRejectedValue(new Error("boom"));
     expect(await retryActivationAction(ORDER)).toEqual({ ok: false, formError: purchaseSystemError });
@@ -393,11 +405,45 @@ describe("createOrderAction", () => {
     );
   });
 
-  it.each(["lifetime_active", "license_suspended"] as const)("%s → ข้อความที่ช่องบัญชี", async (reason) => {
+  it.each(["lifetime_active", "license_suspended", "free_account_used"] as const)("%s → ข้อความที่ช่องบัญชี", async (reason) => {
     vi.mocked(repo.createOrder).mockResolvedValue({ ok: false, reason });
     const state = await createOrderAction({ ok: false }, form({ packageId: PACKAGE, mt5AccountId: ACCOUNT }));
     expect(state.fieldErrors?.mt5AccountId).toBe(purchaseMessages[reason]);
+    expect(fulfilOrder).not.toHaveBeenCalled();
   });
+
+  it("คำสั่งซื้อปกติ (ต้องชำระเงิน) → ไม่เรียกขั้นเปิด license ตอนสร้าง", async () => {
+    vi.mocked(repo.createOrder).mockResolvedValue({ ok: true, id: ORDER, existing: false });
+    await redirectTarget(() => createOrderAction({ ok: false }, form({ packageId: PACKAGE })));
+    expect(fulfilOrder).not.toHaveBeenCalled();
+  });
+
+  it("แพ็กเกจฟรี (freeClaim): รับสิทธิ์แล้ว → เรียกขั้นเปิด license ต่อทันที แล้วไปหน้าคำสั่งซื้อ (ไม่มีขั้นชำระเงิน)", async () => {
+    vi.mocked(repo.createOrder).mockResolvedValue({ ok: true, id: ORDER, existing: false, freeClaim: true });
+    expect(await redirectTarget(() => createOrderAction({ ok: false }, form({ packageId: PACKAGE, mt5AccountId: ACCOUNT })))).toBe(
+      `/account/orders/${ORDER}`,
+    );
+    expect(fulfilOrder).toHaveBeenCalledTimes(1);
+    expect(fulfilOrder).toHaveBeenCalledWith(ORDER, { trigger: "payment" });
+  });
+
+  it("แพ็กเกจฟรีที่รับสิทธิ์ไว้แล้ว (existing) → ไปรายการเดิม ไม่เรียกขั้นเปิด license ซ้ำจากที่นี่", async () => {
+    vi.mocked(repo.createOrder).mockResolvedValue({ ok: true, id: ORDER, existing: true, samePackage: true });
+    expect(await redirectTarget(() => createOrderAction({ ok: false }, form({ packageId: PACKAGE })))).toBe(
+      `/account/orders/${ORDER}?notice=existing`,
+    );
+    expect(fulfilOrder).not.toHaveBeenCalled();
+  });
+
+  it.each(["free_referral_required", "free_already_claimed", "package_unavailable"] as const)(
+    "%s (รวมคำขอที่สร้างเองโดยไม่ผ่านฟอร์ม) → ข้อความที่ช่องแพ็กเกจ ไม่ redirect ไม่เปิด license",
+    async (reason) => {
+      vi.mocked(repo.createOrder).mockResolvedValue({ ok: false, reason });
+      const state = await createOrderAction({ ok: false }, form({ packageId: PACKAGE }));
+      expect(state).toMatchObject({ ok: false, fieldErrors: { packageId: purchaseMessages[reason] } });
+      expect(fulfilOrder).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("uploadSlipAction", () => {
@@ -480,11 +526,14 @@ describe("uploadSlipAction", () => {
 
 describe("cancelOrderAction / deleteMt5AccountAction", () => {
   it("ใช้ userId จาก session และส่งข้อความของ reason กลับ", async () => {
-    vi.mocked(repo.cancelOrder).mockResolvedValue({ ok: true });
+    vi.mocked(repo.cancelOrder).mockResolvedValue({ ok: true, freeClaimReleased: false });
     expect(await cancelOrderAction(ORDER)).toEqual({ ok: true });
     expect(repo.cancelOrder).toHaveBeenCalledWith(USER.id, ORDER);
     vi.mocked(repo.cancelOrder).mockResolvedValue({ ok: false, reason: "order_not_cancellable" });
     expect(await cancelOrderAction(ORDER)).toEqual({ ok: false, formError: purchaseMessages.order_not_cancellable });
+    // แพ็กเกจฟรีที่ยังไม่ได้เปิด license: repo ตัดสินและคืนสิทธิ์เอง — action แค่ส่งผลต่อ
+    vi.mocked(repo.cancelOrder).mockResolvedValue({ ok: true, freeClaimReleased: true });
+    expect(await cancelOrderAction(ORDER)).toEqual({ ok: true });
 
     vi.mocked(repo.deleteMt5Account).mockResolvedValue({ ok: true });
     expect(await deleteMt5AccountAction(ACCOUNT)).toEqual({ ok: true });

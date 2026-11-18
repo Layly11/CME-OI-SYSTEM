@@ -9,7 +9,10 @@
  *
  * เซิร์ฟเวอร์ต้องรันด้วย PAYMENT_PROVIDER=mock และ LICENSE_STORAGE=local + LICENSE_LOCAL_DIR=<โฟลเดอร์ชั่วคราว> (ห้ามชี้ Firebase)
  * จึงจะทดสอบขั้นชำระเงินและการเปิด license ได้ครบ — รายชื่อที่เผยแพร่อ่านผ่าน GET /api/license-file ของเซิร์ฟเวอร์เดียวกัน
- * ถ้าแพ็กเกจ "ตลอดชีพ" ตั้งราคาไว้ด้วย จะทดสอบ license ตลอดชีพเพิ่ม (ไม่ตั้งก็ข้าม)
+ * ฐานข้อมูลต้องผ่าน `npm run db:migrate` + `npm run db:seed` แล้ว (รายการแพ็กเกจ 4 แบบ: ฟรี 1 เดือน / 3 เดือน / 6 เดือน / 1 ปี)
+ * — ทดสอบหน้าแพ็กเกจที่อ่านราคาจากฐานข้อมูล, ชวนเพื่อน → รับแพ็กเกจฟรี (ไม่มีขั้นชำระเงิน), อายุ license ของแต่ละแพ็กเกจ (105/210/425 วัน)
+ *   รหัสชวนที่จำไว้ใน cookie (เพื่อนเปิดลิงก์แล้วไปหน้าอื่นก่อนสมัคร), ปุ่มแพ็กเกจฟรีพาไปหน้าที่มีลิงก์ชวน, ชื่อแพ็กเกจพร้อมวันแถมในหน้าคำสั่งซื้อ
+ * ถ้าแพ็กเกจ "ตลอดชีพ" เปิดขายและตั้งราคาไว้ด้วย จะทดสอบ license ตลอดชีพเพิ่ม (รายการปัจจุบันปิดขาย จึงข้าม)
  *
  * ตัวเลือก:
  *   E2E_EXPECT_PAYMENT=unavailable  เซิร์ฟเวอร์รันโดยไม่ตั้ง PAYMENT_PROVIDER: ตรวจว่าไม่มีปุ่มชำระ/หน้าจำลอง แล้วหยุดแค่นั้น
@@ -26,6 +29,10 @@
  *                                     bank   เซิร์ฟเวอร์เปิด mock: สมัคร → สั่งซื้อ → ชำระจำลอง → เลือกโบรกเกอร์ แล้วหยุด (ยังไม่กรอกเลข)
  *                                     redeem เซิร์ฟเวอร์ "ปิด mock" (ไม่ตั้ง PAYMENT_PROVIDER): เข้าสู่ระบบ → กรอกเลขบัญชี → ต้องเห็น
  *                                            "ชำระแล้ว แต่เปิดใช้งานอัตโนมัติไม่ได้" และเลขบัญชีไม่อยู่ในรายชื่อที่เผยแพร่
+ *                                   รอบ redeem ทดสอบเพิ่มว่าแพ็กเกจฟรีจากการชวนเพื่อนยังรับและเปิด license ได้ตอน mock ปิด (ไม่ใช่การชำระจำลอง)
+ *   E2E_DB_FIXTURES=1               (ต้องตั้ง DATABASE_URL ฐานเดียวกับเซิร์ฟเวอร์ — ฐานทิ้งเท่านั้น) ยอมให้สคริปต์แก้แถวในฐานข้อมูลตรงๆ
+ *                                   เพื่อจัดสถานการณ์ที่หน้าเว็บสร้างเองไม่ได้: ย้ายบัญชี MT5 ที่เคยได้แพ็กเกจฟรีไปให้ผู้ใช้อีกคน
+ *                                   (แตะเฉพาะบัญชี MT5 ที่รอบนี้สร้างเอง และย้ายกลับเมื่อทดสอบเสร็จ) ไม่ตั้ง = ข้ามข้อนั้น
  *   E2E_TRUSTED_PROXY_HOPS=1  ถ้าเซิร์ฟเวอร์รันด้วย TRUSTED_PROXY_HOPS=1 จะทดสอบ rate limit ต่อ IP เพิ่ม
  *                             (ปลอม X-Forwarded-For ตัวแรกไม่ได้ผล, คนอื่นล็อกบัญชีเราจาก IP อื่นไม่ได้)
  *   E2E_ALLOW_REMOTE=1        ยอมให้ BASE_URL ไม่ใช่ localhost (ค่าเริ่มต้นไม่ยอม กันยิงใส่เว็บจริง)
@@ -176,7 +183,41 @@ const thaiDateFormat = new Intl.DateTimeFormat("th-TH", { timeZone: "Asia/Bangko
 const thaiDate = (iso) => thaiDateFormat.format(new Date(iso + "T12:00:00+07:00"));
 /** HTML ที่ตัดตัวคั่นของ React ออก เพื่อเทียบข้อความที่ต่อจากหลายส่วน */
 const plain = (html) => html.replace(/<!-- -->/g, "");
-const PACKAGE_DAYS = [30, 180, 365];
+// อายุ license ของแพ็กเกจที่ต้องจ่ายเงิน = อายุหลัก + วันแถม (3 เดือน 90+15, 6 เดือน 180+30, 1 ปี 365+60)
+const PACKAGE_DAYS = [105, 210, 425];
+const FREE_DAYS = 30;
+const PACKAGE_NAMES = { free: "ฟรี 1 เดือน", three: "3 เดือน แถม 15 วัน", six: "6 เดือน แถม 30 วัน", year: "1 ปี แถม 60 วัน" };
+
+/** ตัวเลือกแพ็กเกจในฟอร์มสั่งซื้อ (ตามลำดับที่แสดง): { id, disabled, html } */
+function orderFormPackages(html) {
+  const out = [];
+  for (const [label] of html.matchAll(/<label\b[\s\S]*?<\/label>/g)) {
+    const input = /<input\b[^>]*name="packageId"[^>]*>/.exec(label)?.[0];
+    if (!input) continue;
+    out.push({ id: /\bvalue="([^"]*)"/.exec(input)?.[1] ?? "", disabled: /\bdisabled\b/.test(input), html: plain(label) });
+  }
+  return out;
+}
+const findPackage = (packages, name) => packages.find((p) => p.html.includes(`>${name}<`));
+
+/** สมัครผู้ใช้ใหม่ — query เช่น "?ref=CODE&package=three_months" (ช่องซ่อนของฟอร์มต้องส่งเองใน extra เหมือนที่เบราว์เซอร์ส่ง) */
+async function registerUser(label, name, query = "", extra = {}) {
+  const userEmail = `e2e-${label}-${stamp}@example.com`;
+  const res = await submitForm(`/register${query}`, "email", { name, email: userEmail, password, accept: "on", ...extra });
+  return { res, session: sessionCookie(res)?.value, email: userEmail };
+}
+
+/** แก้ฐานข้อมูลตรงๆ (เฉพาะ E2E_DB_FIXTURES=1) — ใช้จัดสถานการณ์ที่หน้าเว็บสร้างเองไม่ได้ */
+const canUseDbFixtures = process.env.E2E_DB_FIXTURES === "1" && Boolean(process.env.DATABASE_URL);
+async function dbExec(query, params = []) {
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(process.env.DATABASE_URL, { max: 1, onnotice: () => {} });
+  try {
+    return await sql.unsafe(query, params);
+  } finally {
+    await sql.end({ timeout: 5 });
+  }
+}
 
 function runNpmScript(script, env, args = []) {
   return new Promise((resolve) => {
@@ -424,7 +465,7 @@ async function purchaseFlow(session) {
     firstExpiry = entryDate(list, accountNumber);
     const days = firstExpiry ? dayDiff(bangkokToday(), firstExpiry) : null;
     check("รายชื่อที่เผยแพร่มี id<เลขบัญชี>.<ปี.เดือน.วัน> ของลูกค้า 1 รายการ", firstExpiry !== null, list.slice(0, 200));
-    check("วันหมดอายุ = วันนี้ + อายุแพ็กเกจ (30/180/365 วัน)", PACKAGE_DAYS.includes(days), `${firstExpiry} (${days} วัน)`);
+    check("วันหมดอายุ = วันนี้ + อายุแพ็กเกจรวมวันแถม (105/210/425 วัน)", PACKAGE_DAYS.includes(days), `${firstExpiry} (${days} วัน)`);
     check("รายชื่อเดิมยังอยู่ครบ (ไม่มีรายการของลูกค้าคนอื่นหาย)", listBefore === "" || listBefore.split(",").every((e) => list.split(",").includes(e)));
     check("หน้าคำสั่งซื้อ: \"เปิดใช้งานแล้ว\" พร้อมวันหมดอายุแบบไทย ไม่มีสถานะกำลังเปิดใช้งาน", orderPage.text.includes("เปิดใช้งานแล้ว") && firstExpiry !== null && plain(orderPage.text).includes(`ใช้ได้ถึง ${thaiDate(firstExpiry)} (อีก ${days} วัน)`) && !orderPage.text.includes('data-testid="retry-activation"'));
     check("หน้าคำสั่งซื้อมีลิงก์ไปวิธีติดตั้ง", orderPage.text.includes('href="/install"'));
@@ -533,11 +574,17 @@ async function purchaseFlow(session) {
     const repaired = await runLicensePublish(scriptEnv(licenseDir));
     const restored = await readFile(target, "utf8").catch(() => null);
     check("ค่าเริ่มต้น (เขียนเสมอ): ไฟล์ปลายทางกลับมา เนื้อหาเหมือนเดิมทุกตัวอักษร", repaired.code === 0 && repaired.output.includes("เขียนปลายทางแล้ว") && restored === original, lastLines(repaired.output));
-    const noStorage = scriptEnv(licenseDir);
-    delete noStorage.LICENSE_STORAGE;
-    delete noStorage.NODE_ENV;
-    const refused = await runLicensePublish(noStorage);
-    check("ไม่ตั้ง LICENSE_STORAGE → สคริปต์ไม่เดาปลายทาง: exit 1 พร้อมชื่อตัวแปร ไม่แตะอะไร", refused.code === 1 && refused.output.includes("LICENSE_STORAGE") && refused.output.includes("ยังไม่ได้แตะ"), lastLines(refused.output));
+    // `npm run license:publish` โหลด .env.local เอง (--env-file) — ถ้าไฟล์นั้นตั้ง LICENSE_STORAGE ไว้ ลบจาก environment ของสคริปต์ก็ไม่ทำให้ "ไม่ตั้ง"
+    const envLocal = await readFile(".env.local", "utf8").catch(() => "");
+    if (/^\s*LICENSE_STORAGE\s*=\s*\S/m.test(envLocal)) {
+      console.log("  ข้าม  ไม่ตั้ง LICENSE_STORAGE → exit 1 — .env.local ของเครื่องนี้ตั้ง LICENSE_STORAGE ไว้ จึงจำลองกรณี \"ไม่ตั้ง\" ผ่าน npm script ไม่ได้");
+    } else {
+      const noStorage = scriptEnv(licenseDir);
+      delete noStorage.LICENSE_STORAGE;
+      delete noStorage.NODE_ENV;
+      const refused = await runLicensePublish(noStorage);
+      check("ไม่ตั้ง LICENSE_STORAGE → สคริปต์ไม่เดาปลายทาง: exit 1 พร้อมชื่อตัวแปร ไม่แตะอะไร", refused.code === 1 && refused.output.includes("LICENSE_STORAGE") && refused.output.includes("ยังไม่ได้แตะ"), lastLines(refused.output));
+    }
     const typo = Object.assign(scriptEnv(licenseDir), { LICENSE_STORAGE: "Firebase" });
     const refusedTypo = await runLicensePublish(typo);
     check("LICENSE_STORAGE=Firebase (พิมพ์ผิด) → exit 1 ไม่ถอยไปเขียนไฟล์ในเครื่อง", refusedTypo.code === 1 && refusedTypo.output.includes("ไม่รู้จักค่า LICENSE_STORAGE"), lastLines(refusedTypo.output));
@@ -562,7 +609,7 @@ async function purchaseFlow(session) {
   // ---- ลูกค้าสองคนเปิดใช้งานพร้อมกัน (+ แพ็กเกจตลอดชีพ ถ้าตั้งราคาไว้) ----
   if (!expectPublishFail) {
     section("ลูกค้าสองคนกรอกเลขบัญชีพร้อมกัน" + (lifetimePackageId ? " (คนหนึ่งซื้อแพ็กเกจตลอดชีพ)" : ""));
-    if (!lifetimePackageId) console.log("  ข้าม  แพ็กเกจตลอดชีพยังไม่ตั้งราคา — ไม่ได้ทดสอบ license ตลอดชีพ (ตั้ง price_thb ของ lifetime ในฐานทดสอบ)");
+    if (!lifetimePackageId) console.log("  ข้าม  แพ็กเกจตลอดชีพไม่ได้เปิดขาย (หรือยังไม่ตั้งราคา) — ไม่ได้ทดสอบ license ตลอดชีพผ่านหน้าเว็บ (เปิดขาย + ตั้ง price_thb ของ lifetime ในฐานทดสอบเพื่อทดสอบ)");
     const reg = await submitForm("/register", "email", { name: "ผู้ทดสอบ 3", email: `e2e-third-${stamp}@example.com`, password, accept: "on" });
     const thirdSession = sessionCookie(reg)?.value;
     const thirdNew = await request("/account/orders/new", { cookie: thirdSession });
@@ -645,6 +692,299 @@ async function purchaseFlow(session) {
 }
 
 /**
+ * ชวนเพื่อน → รับแพ็กเกจฟรี 1 เดือน (ไม่มีขั้นชำระเงิน) → เลือกโบรกเกอร์ → กรอกเลขบัญชี → license 30 วัน
+ * + ด่าน: ยังไม่มีเพื่อนรับไม่ได้, ครั้งเดียวต่อผู้ใช้, ครั้งเดียวต่อบัญชี MT5, ยกเลิกก่อนเปิดคืนสิทธิ์, แพ็กเกจฟรีไม่ผ่านหน้าชำระเงิน
+ * + อายุของแพ็กเกจ 6 เดือน (210 วัน) / 1 ปี (425 วัน) และการต่ออายุบัญชีที่ได้ฟรีด้วยแพ็กเกจ 3 เดือน (+105 วันจากวันหมดเดิม)
+ * ต้องการเซิร์ฟเวอร์ที่รันด้วย PAYMENT_PROVIDER=mock และฐานข้อมูลที่ seed รายการแพ็กเกจ 4 แบบแล้ว
+ */
+async function referralFlow() {
+  section("ชวนเพื่อน: ยังไม่มีเพื่อนสมัคร → รับแพ็กเกจฟรีไม่ได้");
+  const inviter = await registerUser("inviter", "ผู้ชวน", "?package=free_referral", { package: "free_referral" });
+  check("สมัครจากปุ่มแพ็กเกจฟรี (\"สมัครและรับลิงก์ชวนเพื่อน\") → 303 ไปหน้าบัญชีของฉัน ที่มีลิงก์ชวนเพื่อน (ไม่ใช่หน้าสั่งซื้อที่ตัวเลือกยังถูกปิด)", inviter.res.status === 303 && inviter.res.location === "/account", `${inviter.res.status} ${inviter.res.location}`);
+  const S = inviter.session;
+  if (!S) throw new Error("สมัครผู้ชวนไม่สำเร็จ");
+  {
+    const landing = await request(inviter.res.location ?? "/account", { cookie: S });
+    check("หน้าที่ไปถึงหลังสมัครมีลิงก์ชวนเพื่อนและปุ่มคัดลอกจริง", landing.status === 200 && landing.text.includes('data-testid="invite-link"') && /\/register\?ref=[0-9A-F]{10}/.test(landing.text) && landing.text.includes("คัดลอกลิงก์"));
+    const freeCardGuest = await request("/register?package=free_referral");
+    check("หน้าสมัครจากปุ่มแพ็กเกจฟรี: ลิงก์ \"เข้าสู่ระบบ\" พาไปหน้าบัญชีของฉันเช่นกัน", freeCardGuest.text.includes('href="/login?next=%2Faccount"'));
+    const freeCardMember = await request("/register?package=free_referral", { cookie: S });
+    check("สมาชิกที่ล็อกอินอยู่กดปุ่มแพ็กเกจฟรี → ถูกพาไปหน้าบัญชีของฉัน", redirectsTo(freeCardMember.text, "/account"));
+  }
+
+  let form = await request("/account/orders/new?package=free_referral", { cookie: S });
+  let packages = orderFormPackages(form.text);
+  check("ฟอร์มสั่งซื้อแสดง 4 แพ็กเกจตามลำดับ พร้อมวันแถมและราคาจากฐานข้อมูล", packages.length === 4 && [PACKAGE_NAMES.free, PACKAGE_NAMES.three, PACKAGE_NAMES.six, PACKAGE_NAMES.year].every((nm, i) => packages[i].html.includes(`>${nm}<`)) && packages[1].html.includes("3,000 บาท") && packages[2].html.includes("6,000 บาท") && packages[3].html.includes("11,000 บาท") && packages[0].html.includes(">ฟรี<"), packages.map((p) => p.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 60)).join(" | "));
+  const free = findPackage(packages, PACKAGE_NAMES.free);
+  const three = findPackage(packages, PACKAGE_NAMES.three);
+  const six = findPackage(packages, PACKAGE_NAMES.six);
+  const year = findPackage(packages, PACKAGE_NAMES.year);
+  if (!free || !three || !six || !year) throw new Error("ไม่พบแพ็กเกจครบ 4 แบบในฟอร์มสั่งซื้อ — รัน npm run db:seed กับฐานทดสอบก่อน");
+  check("ยังไม่มีเพื่อน: ตัวเลือกแพ็กเกจฟรีถูกปิด แสดงเงื่อนไขและความคืบหน้า 0/1", free.disabled && free.html.includes("เงื่อนไข: ชวนเพื่อนสมัครสมาชิก 1 คน") && free.html.includes("ชวนเพื่อนสมัครแล้ว 0/1 คน") && !three.disabled && !six.disabled && !year.disabled, free.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " "));
+  check("ยังไม่มีเพื่อน: ข้อความของแพ็กเกจฟรีมีลิงก์จริงไปหน้าบัญชีของฉัน (ที่มีลิงก์ชวนเพื่อน)", /<a\b[^>]*href="\/account"[^>]*data-testid="free-link"|<a\b[^>]*data-testid="free-link"[^>]*href="\/account"/.test(free.html) && free.html.includes("ดูลิงก์ชวนเพื่อนในหน้าบัญชีของฉัน"), free.html.replace(/\s+/g, " ").slice(-300));
+  {
+    const text = plain(form.text);
+    check("ฟอร์มสั่งซื้อ: ข้อความใช้ได้กับแพ็กเกจฟรี (ไม่มี \"ชำระเงินก่อน\"/\"หลังชำระเงิน\" และบอกว่าแพ็กเกจฟรีไม่มีขั้นชำระเงิน)", !/ชำระเงินก่อน|กรอกเลขบัญชีหลังชำระเงิน|แล้วชำระเงินด้วยบัตรในขั้นถัดไป/.test(text) && text.includes("แพ็กเกจฟรีไม่มีขั้นชำระเงิน") && text.includes("บัญชีใหม่ (กรอกเลขบัญชีในหน้าคำสั่งซื้อ)"));
+  }
+  const forged = await post("/account/orders/new", "mt5AccountId", form.text, { packageId: free.id, mt5AccountId: "" }, S);
+  check("ส่งคำขอรับแพ็กเกจฟรีเอง (ข้ามตัวเลือกที่ปิดไว้) → ถูกปฏิเสธ ไม่ redirect", forged.status === 200 && forged.text.includes("แพ็กเกจฟรีรับได้เมื่อมีเพื่อนสมัครสมาชิกผ่านลิงก์ชวนของคุณแล้วอย่างน้อย 1 คน"), `status ${forged.status} ${forged.location}`);
+  let home = await request("/account", { cookie: S });
+  check("ไม่มีคำสั่งซื้อถูกสร้างจากคำขอที่ถูกปฏิเสธ", home.text.includes("ยังไม่มีคำสั่งซื้อ") && !/\/account\/orders\/[0-9a-f-]{36}/.test(home.text));
+  const code = /\/register\?ref=([0-9A-F]{10})/.exec(home.text)?.[1];
+  const count = (html) => /data-testid="referred-count"[^>]*>(?:<!-- -->)?(\d+)/.exec(html)?.[1];
+  const freeState = (html) => /data-testid="free-package-status" data-state="([a-z_]+)"/.exec(html)?.[1];
+  check("หน้าบัญชี: มีลิงก์ชวนเพื่อน /register?ref=<รหัส 10 ตัว> ปุ่มคัดลอก และจำนวนเพื่อน 0 คน", typeof code === "string" && home.text.includes('data-testid="invite-link"') && home.text.includes("คัดลอกลิงก์") && count(home.text) === "0" && freeState(home.text) === "need_referral", `code=${code} count=${count(home.text)} state=${freeState(home.text)}`);
+  if (!code) throw new Error("ไม่พบลิงก์ชวนเพื่อนในหน้าบัญชี");
+
+  section("เพื่อนสมัครผ่านลิงก์ชวน");
+  {
+    const invitePath = `/register?ref=${code}&package=three_months`;
+    const page = await request(invitePath);
+    check("หน้าสมัครจากลิงก์ชวน: มีช่องซ่อน ref และ package (ไม่แสดงว่ารหัสถูกหรือผิด)", page.status === 200 && page.text.includes(`name="ref" value="${code}"`) && page.text.includes('name="package" value="three_months"'));
+    const lower = await request(`/register?ref=${code.toLowerCase()}`);
+    check("ลิงก์ที่พิมพ์เล็ก → ยังใช้ได้ (ช่องซ่อนเป็นรหัสตัวพิมพ์ใหญ่)", lower.text.includes(`name="ref" value="${code}"`));
+    const junk = await request("/register?ref=%22%3E%3Cscript%3E&package=nope");
+    check("ref/package ที่รูปแบบไม่ถูก → ถูกทิ้งเงียบๆ ไม่มีช่องซ่อน ไม่มี error", junk.status === 200 && !junk.text.includes('name="ref"') && !junk.text.includes('name="package"') && !junk.text.includes("<script>&"));
+
+    const hidden = { ref: code, package: "three_months" };
+    const friendEmail = `e2e-friend-${stamp}@example.com`;
+    const invalid = await submitForm(invitePath, "email", { name: "เพื่อน", email: friendEmail, password: "short", accept: "on", ...hidden });
+    check("เพื่อนกรอกผิด (รหัสผ่านสั้น) → ยังอยู่หน้าเดิม และรหัสชวน/แพ็กเกจยังอยู่ในฟอร์ม", invalid.status === 200 && sessionCookie(invalid) === null && invalid.text.includes(`name="ref" value="${code}"`) && invalid.text.includes('name="package" value="three_months"'), `status ${invalid.status}`);
+    home = await request("/account", { cookie: S });
+    check("สมัครไม่สำเร็จ → ยังไม่นับ", count(home.text) === "0");
+    const friend = await submitForm(invitePath, "email", { name: "เพื่อน", email: friendEmail, password, accept: "on", ...hidden });
+    check("เพื่อนสมัครสำเร็จ → 303 ไปหน้าสั่งซื้อแพ็กเกจที่เลือกไว้ (flow ?package= ยังทำงานคู่กับ ?ref=)", friend.status === 303 && friend.location === "/account/orders/new?package=three_months" && sessionCookie(friend) !== null, `${friend.status} ${friend.location}`);
+    const friendSession = sessionCookie(friend)?.value;
+    const friendHome = await request("/account", { cookie: friendSession });
+    check("เพื่อนไม่ได้สิทธิ์พิเศษ: จำนวนเพื่อนของเขาเอง 0 คน และยังรับแพ็กเกจฟรีไม่ได้", count(friendHome.text) === "0" && freeState(friendHome.text) === "need_referral");
+
+    // รหัสที่ไม่มีอยู่จริง → สมัครได้ตามปกติ ไม่มีใครได้นับ
+    const stranger = await registerUser("noref", "ไม่มีผู้ชวน", "?ref=00000000FF", { ref: "00000000FF" });
+    check("รหัสชวนที่ไม่มีอยู่จริง → สมัครได้ตามปกติ (ไม่มีข้อความ error)", stranger.res.status === 303 && stranger.res.location === "/account", `${stranger.res.status} ${stranger.res.location}`);
+    // ผู้ใช้ที่ล็อกอินอยู่เปิดลิงก์ชวนของตัวเอง → ถูกพาออกจากหน้าสมัคร (ชวนตัวเองไม่ได้)
+    const self = await request(`/register?ref=${code}`, { cookie: S });
+    check("ผู้ชวนเปิดลิงก์ของตัวเองตอนล็อกอินอยู่ → ไม่ได้หน้าสมัคร (ถูกพาไปหน้าบัญชี)", redirectsTo(self.text, "/account"));
+  }
+  home = await request("/account", { cookie: S });
+  check("หน้าบัญชีของผู้ชวน: เพื่อนที่สมัครผ่านลิงก์ 1 คน และรับแพ็กเกจฟรีได้แล้ว", count(home.text) === "1" && freeState(home.text) === "eligible" && home.text.includes('href="/account/orders/new?package=free_referral"'), `count=${count(home.text)} state=${freeState(home.text)}`);
+
+  section("เพื่อนเปิดลิงก์ชวน แล้วไปหน้าอื่นก่อนสมัคร (รหัสชวนอยู่ใน cookie)");
+  {
+    const REF_COOKIE = "cme_ref";
+    const refCookie = (res) => res.headers.getSetCookie().find((line) => line.startsWith(`${REF_COOKIE}=`)) ?? null;
+    // 1) เปิดลิงก์ชวน → เซิร์ฟเวอร์ตั้ง cookie จำรหัส
+    const landed = await request(`/register?ref=${code.toLowerCase()}`);
+    const set = refCookie(landed);
+    check("เปิด /register?ref=<รหัส> → ตั้ง cookie cme_ref=<รหัสตัวพิมพ์ใหญ่> แบบ HttpOnly + SameSite=Lax อายุ 7 วัน", landed.status === 200 && set !== null && set.startsWith(`${REF_COOKIE}=${code};`) && /HttpOnly/i.test(set) && /SameSite=lax/i.test(set) && /Max-Age=604800/i.test(set) && /Path=\//i.test(set), String(set));
+    const junk = await request("/register?ref=not-a-code");
+    const none = await request("/register?package=three_months");
+    check("รหัสผิดรูปแบบ / ไม่มี ?ref= → ไม่ตั้งและไม่ลบ cookie", refCookie(junk) === null && refCookie(none) === null);
+    const other = await request(`/pricing?ref=${code}`);
+    check("หน้าอื่นที่มี ?ref= ไม่ตั้ง cookie (เฉพาะหน้าสมัคร)", refCookie(other) === null);
+
+    // 2) เพื่อนไปดูหน้าแพ็กเกจ แล้วกด "เลือก 3 เดือน" → /register?package=three_months (URL ไม่มี ref แล้ว)
+    const viaPricing = "/register?package=three_months";
+    const page = await request(viaPricing, { headers: { cookie: `${REF_COOKIE}=${code}` } });
+    check("หน้าสมัครที่มาจากหน้าแพ็กเกจ: ไม่มีช่องซ่อน ref ในฟอร์ม (รหัสอยู่ใน cookie เท่านั้น)", page.status === 200 && !page.text.includes('name="ref"') && page.text.includes('name="package" value="three_months"'));
+    const fields = { ...actionFields(page.text, "email"), name: "เพื่อนคนที่สอง", password, accept: "on", package: "three_months" };
+    // ไม่มี cookie → ไม่นับ (ตัวเทียบ)
+    const uncounted = await request(viaPricing, { method: "POST", body: formData({ ...fields, email: `e2e-nocookie-${stamp}@example.com` }) });
+    home = await request("/account", { cookie: S });
+    check("สมัครจากหน้าแพ็กเกจโดยไม่มี cookie → สมัครได้ แต่ไม่นับให้ใคร (ยัง 1 คน)", uncounted.status === 303 && count(home.text) === "1", `${uncounted.status} count=${count(home.text)}`);
+    // กรอกผิดก่อน 1 รอบ: cookie ต้องยังอยู่ (ไม่ถูกลบ)
+    const invalid = await request(viaPricing, { method: "POST", headers: { cookie: `${REF_COOKIE}=${code}` }, body: formData({ ...fields, email: `e2e-cookie-${stamp}@example.com`, password: "short" }) });
+    check("กรอกผิด → ยังไม่สมัคร และ cookie รหัสชวนไม่ถูกลบ", invalid.status === 200 && sessionCookie(invalid) === null && refCookie(invalid) === null, `status ${invalid.status} ${refCookie(invalid)}`);
+    const counted = await request(viaPricing, { method: "POST", headers: { cookie: `${REF_COOKIE}=${code}` }, body: formData({ ...fields, email: `e2e-cookie-${stamp}@example.com` }) });
+    const cleared = refCookie(counted);
+    check("สมัครจากหน้าแพ็กเกจพร้อม cookie → 303 ไปหน้าสั่งซื้อแพ็กเกจที่เลือก และ cookie รหัสชวนถูกลบ", counted.status === 303 && counted.location === "/account/orders/new?package=three_months" && sessionCookie(counted) !== null && cleared !== null && (/Max-Age=0/i.test(cleared) || /Expires=Thu, 01 Jan 1970/i.test(cleared)), `${counted.status} ${counted.location} ${cleared}`);
+    home = await request("/account", { cookie: S });
+    check("ผู้ชวนได้นับเพื่อนที่ไปดูหน้าแพ็กเกจก่อนสมัคร (2 คน)", count(home.text) === "2", `count=${count(home.text)}`);
+
+    // 3) เพื่อนกด "เข้าสู่ระบบ" แล้วกลับมา "สมัครสมาชิก" (/register เปล่าๆ) ก็ยังถูกนับ
+    const viaLogin = await request("/login", { headers: { cookie: `${REF_COOKIE}=${code}` } });
+    const bare = await request("/register", { headers: { cookie: `${REF_COOKIE}=${code}` } });
+    const third = await request("/register", { method: "POST", headers: { cookie: `${REF_COOKIE}=${code}` }, body: formData({ ...actionFields(bare.text, "email"), name: "เพื่อนคนที่สาม", email: `e2e-vialogin-${stamp}@example.com`, password, accept: "on" }) });
+    home = await request("/account", { cookie: S });
+    check("ไปหน้าเข้าสู่ระบบแล้วกลับมาสมัคร (/register ไม่มี query) → ยังถูกนับ (3 คน)", viaLogin.status === 200 && viaLogin.text.includes('href="/register"') && third.status === 303 && third.location === "/account" && count(home.text) === "3", `${third.status} ${third.location} count=${count(home.text)}`);
+    // 4) cookie ที่ผู้ใช้แก้เองเป็นค่าแปลก → สมัครได้ตามปกติ ไม่นับ ไม่ error
+    const tampered = await request("/register", { method: "POST", headers: { cookie: `${REF_COOKIE}=%27%20or%201%3D1` }, body: formData({ ...actionFields(bare.text, "email"), name: "cookie แปลก", email: `e2e-badcookie-${stamp}@example.com`, password, accept: "on" }) });
+    home = await request("/account", { cookie: S });
+    check("cookie รหัสชวนที่ถูกแก้เป็นค่าแปลก → สมัครได้ตามปกติ ไม่นับให้ใคร", tampered.status === 303 && tampered.location === "/account" && count(home.text) === "3", `${tampered.status} count=${count(home.text)}`);
+  }
+
+  section("รับแพ็กเกจฟรี: ไม่มีขั้นชำระเงิน");
+  form = await request("/account/orders/new?package=free_referral", { cookie: S });
+  packages = orderFormPackages(form.text);
+  const freeOpen = findPackage(packages, PACKAGE_NAMES.free);
+  check("ฟอร์มสั่งซื้อ: แพ็กเกจฟรีเลือกได้แล้ว (1/1) และถูกเลือกไว้ให้จาก ?package=free_referral", Boolean(freeOpen) && !freeOpen.disabled && freeOpen.html.includes("ชวนเพื่อนสมัครแล้ว 1/1 คน") && /<input\b[^>]*name="packageId"[^>]*\bchecked\b/.test(freeOpen.html), freeOpen?.html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " "));
+
+  // ---- รับสิทธิ์ครั้งแรก แล้วยกเลิกก่อนเปิด license → สิทธิ์กลับมา ----
+  const firstClaim = await createOrder(S, form.text, free.id);
+  check("รับแพ็กเกจฟรี → 303 ไปหน้าคำสั่งซื้อ", firstClaim.status === 303 && /^\/account\/orders\/[0-9a-f-]{36}$/.test(firstClaim.path), `${firstClaim.status} ${firstClaim.path}`);
+  let claimPage = await request(firstClaim.path, { cookie: S });
+  check("หน้าคำสั่งซื้อฟรี: ยอด \"ฟรี\" สถานะ \"รับสิทธิ์แล้ว · รอเลือกโบรกเกอร์\" ไปขั้นเลือกโบรกเกอร์ทันที", plain(claimPage.text).includes(">ฟรี<") && claimPage.text.includes("รับสิทธิ์แล้ว · รอเลือกโบรกเกอร์") && claimPage.text.includes("รับสิทธิ์แพ็กเกจฟรีแล้ว ไม่ต้องชำระเงิน") && claimPage.text.includes('name="brokerCode"'));
+  check("หน้าคำสั่งซื้อฟรี: ไม่มีปุ่มชำระด้วยบัตร ไม่มีฟอร์มแนบสลิป ไม่มีคำว่า \"รอชำระ\"", !hasForm(claimPage.text, 'data-testid="pay-by-card"') && !claimPage.text.includes('name="slip"') && !claimPage.text.includes("รอชำระ") && !claimPage.text.includes("ชำระเงินด้วยบัตร"));
+  const mockOfFree = await request(`${firstClaim.path}/mock-pay`, { cookie: S });
+  check("หน้าจำลองการชำระเงินของคำสั่งซื้อฟรี → 404 (ไม่มีปุ่มยืนยัน)", mockOfFree.text.includes("ไม่พบหน้านี้") && !hasForm(mockOfFree.text, 'data-testid="mock-pay"'));
+  const again = await createOrder(S, form.text, free.id);
+  check("กดรับซ้ำขณะยังไม่เปิด license → กลับคำสั่งซื้อเดิม ไม่สร้างรายการที่สอง", again.status === 303 && again.path === `${firstClaim.path}?notice=existing`, `${again.status} ${again.path}`);
+  home = await request("/account", { cookie: S });
+  check("หน้าบัญชี: สถานะแพ็กเกจฟรี \"รับสิทธิ์ไว้แล้ว\" พร้อมลิงก์ไปคำสั่งซื้อ และประกาศขั้นถัดไปใช้คำว่า \"รับสิทธิ์\"", freeState(home.text) === "claim_open" && home.text.includes(`href="${firstClaim.path}"`) && plain(home.text).includes("รับสิทธิ์แพ็กเกจฟรีแล้ว ขั้นถัดไป"), `state=${freeState(home.text)}`);
+
+  // คำสั่งซื้อที่ต้องจ่ายเงินของผู้ใช้คนเดียวกัน — ใช้ฟอร์มชำระของมันยิงใส่คำสั่งซื้อฟรี (แก้ id ในคำขอ)
+  const paidOrder = await createOrder(S, form.text, three.id);
+  const paidPage = await request(paidOrder.path, { cookie: S });
+  check("คำสั่งซื้อ 3 เดือนของผู้ใช้เดียวกันยังเป็นขั้นตอนเดิม: รอชำระ 3,000 บาท มีปุ่มชำระด้วยบัตร", paidOrder.status === 303 && paidPage.text.includes("รอชำระ") && plain(paidPage.text).includes("3,000 บาท") && hasForm(paidPage.text, 'data-testid="pay-by-card"'));
+  {
+    // วันแถมต้องไม่หายหลังเลือกแพ็กเกจ: หน้าคำสั่งซื้อ (ก่อนชำระ) หน้าจำลองการชำระ และประวัติคำสั่งซื้อ ใช้ชื่อเดียวกับหน้าแพ็กเกจ
+    const text = plain(paidPage.text);
+    check("หน้าคำสั่งซื้อ 3 เดือนก่อนชำระ: ชื่อ \"3 เดือน แถม 15 วัน\" และ \"90 วัน + แถม 15 วัน (รวม 105 วัน)\"", text.includes(`>${PACKAGE_NAMES.three}<`) && text.includes("90 วัน + แถม 15 วัน (รวม 105 วัน)"), text.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 240));
+    const mockPay = plain((await request(`${paidOrder.path}/mock-pay`, { cookie: S })).text);
+    check("หน้าจำลองการชำระเงิน: ชื่อแพ็กเกจพร้อมวันแถมและจำนวนวันรวม", mockPay.includes(PACKAGE_NAMES.three) && mockPay.includes("90 วัน + แถม 15 วัน (รวม 105 วัน)") && mockPay.includes("3,000 บาท"));
+    const history = plain((await request("/account", { cookie: S })).text);
+    check("หน้าบัญชี: ประวัติคำสั่งซื้อแสดง \"3 เดือน แถม 15 วัน\" (ไม่ใช่ \"3 เดือน\" เปล่า)", history.includes(`>${PACKAGE_NAMES.three}<`) && !history.includes(">3 เดือน<"));
+    const freePage = plain((await request(firstClaim.path, { cookie: S })).text);
+    check("คำสั่งซื้อแพ็กเกจฟรี (ไม่มีวันแถม): ชื่อ \"ฟรี 1 เดือน\" และ \"30 วัน\"", freePage.includes(`>${PACKAGE_NAMES.free}<`) && freePage.includes(">30 วัน<"));
+  }
+  {
+    const start = reboundFields(paidPage.text, 'data-testid="pay-by-card"', paidOrder.id, firstClaim.id);
+    const forcedStart = await request(paidOrder.path, { method: "POST", cookie: S, body: formData(start.fields) });
+    check("ยิงปุ่มชำระใส่คำสั่งซื้อฟรี (แก้ id) → 303 กลับหน้าคำสั่งซื้อฟรี ไม่ไปหน้าชำระเงิน", start.replaced && forcedStart.status === 303 && forcedStart.location === firstClaim.path, `replaced=${start.replaced} ${forcedStart.status} ${forcedStart.location}`);
+    const mockPage = await request(`${paidOrder.path}/mock-pay`, { cookie: S });
+    const confirm = reboundFields(mockPage.text, 'data-testid="mock-pay"', paidOrder.id, firstClaim.id);
+    const forcedConfirm = await request(`${paidOrder.path}/mock-pay`, { method: "POST", cookie: S, body: formData(confirm.fields) });
+    check("ยิงยืนยันการชำระจำลองใส่คำสั่งซื้อฟรี (แก้ id) → ถูกปฏิเสธ", confirm.replaced && forcedConfirm.status === 200 && forcedConfirm.text.includes("คำสั่งซื้อนี้ชำระเงินไม่ได้ในสถานะปัจจุบัน"), `replaced=${confirm.replaced} status=${forcedConfirm.status}`);
+    const stillUnpaid = await request(paidOrder.path, { cookie: S });
+    check("คำสั่งซื้อ 3 เดือนยังรอชำระ (คำขอปลอมไม่ได้ทำให้อะไรถูกชำระ)", stillUnpaid.text.includes("รอชำระ"));
+  }
+
+  section("ยกเลิกแพ็กเกจฟรีก่อนเปิด license → สิทธิ์กลับมา");
+  check("หน้าคำสั่งซื้อฟรีที่ยังไม่ได้เปิด license มีปุ่มยกเลิก พร้อมคำอธิบายว่าสิทธิ์จะกลับมา", hasForm(claimPage.text, 'data-testid="cancel-order"') && claimPage.text.includes('data-testid="cancel-free-claim"'));
+  const cancelled = await post(firstClaim.path, 'data-testid="cancel-order"', claimPage.text, {}, S);
+  claimPage = await request(firstClaim.path, { cookie: S });
+  check("ยกเลิก → คำสั่งซื้อเป็น \"ยกเลิก\" ไม่มีตัวเลือกโบรกเกอร์/ปุ่มยกเลิกอีก", (cancelled.status === 200 || cancelled.status === 303) && claimPage.text.includes("ยกเลิก") && !claimPage.text.includes('name="brokerCode"') && !hasForm(claimPage.text, 'data-testid="cancel-order"'), `status ${cancelled.status}`);
+  home = await request("/account", { cookie: S });
+  check("หน้าบัญชี: สิทธิ์แพ็กเกจฟรีกลับมาเป็น \"รับได้\"", freeState(home.text) === "eligible", `state=${freeState(home.text)}`);
+  const cancelledMt5 = await request(`/account/mt5/new?order=${firstClaim.id}`, { cookie: S });
+  check("คำสั่งซื้อฟรีที่ยกเลิกแล้ว: กรอกเลขบัญชีไม่ได้", !cancelledMt5.text.includes('name="accountNumber"'));
+
+  section("รับแพ็กเกจฟรีอีกครั้ง → เลือกโบรกเกอร์ → กรอกเลขบัญชี → license 30 วัน");
+  const listBefore = await publishedList();
+  const claim = await createOrder(S, form.text, free.id);
+  check("รับใหม่หลังยกเลิก → ได้คำสั่งซื้อใหม่ (คนละรายการกับที่ยกเลิก)", claim.status === 303 && /^\/account\/orders\/[0-9a-f-]{36}$/.test(claim.path) && claim.path !== firstClaim.path, `${claim.status} ${claim.path}`);
+  claimPage = await request(claim.path, { cookie: S });
+  check("รับสิทธิ์แล้วแต่ยังไม่มีเลขบัญชี → รายชื่อ license ยังไม่เปลี่ยน", (await publishedList()) === listBefore);
+  const brokerValues = [...new Set([...claimPage.text.matchAll(/<input\b[^>]*name="brokerCode"[^>]*>/g)].map(([tag]) => /\bvalue="([^"]*)"/.exec(tag)?.[1]))];
+  check("แพ็กเกจฟรีเลือกโบรกเกอร์จาก 6 รายเดิม", JSON.stringify(brokerValues) === JSON.stringify(BROKER_CODES), JSON.stringify(brokerValues));
+  const chosen = await post(claim.path, "brokerCode", claimPage.text, { brokerCode: "dooprime" }, S);
+  check("เลือกโบรกเกอร์ → 303", chosen.status === 303 && chosen.location === claim.path, `${chosen.status} ${chosen.location}`);
+  const freeNumber = String(30_000_000 + (Date.now() % 59_999_999));
+  const submitFree = await prepareMt5Submit(S, claim.id, freeNumber);
+  const submitted = await submitFree();
+  check("กรอกเลขบัญชี MT5 → 303 กลับหน้าคำสั่งซื้อ", submitted.status === 303 && submitted.location === claim.path, `${submitted.status} ${submitted.location}`);
+  let list = await publishedList();
+  const freeExpiry = entryDate(list, freeNumber);
+  check("รายชื่อที่เผยแพร่มีเลขบัญชีนี้ วันหมดอายุ = วันนี้ + 30 วัน", freeExpiry !== null && dayDiff(bangkokToday(), freeExpiry) === FREE_DAYS, `${freeExpiry}`);
+  check("รายชื่อเดิมยังอยู่ครบ", listBefore === "" || listBefore.split(",").every((e) => list.split(",").includes(e)));
+  claimPage = await request(claim.path, { cookie: S });
+  check("หน้าคำสั่งซื้อฟรี: \"เปิดใช้งานแล้ว\" ใช้ได้ถึงวันที่ถูกต้อง (อีก 30 วัน) และยกเลิกไม่ได้แล้ว", claimPage.text.includes("เปิดใช้งานแล้ว") && freeExpiry !== null && plain(claimPage.text).includes(`ใช้ได้ถึง ${thaiDate(freeExpiry)} (อีก ${FREE_DAYS} วัน)`) && !hasForm(claimPage.text, 'data-testid="cancel-order"'));
+  home = await request("/account", { cookie: S });
+  const freeAccountId = new RegExp(`/account/orders/new\\?account=([0-9a-f-]{36})`).exec(home.text)?.[1];
+  check("หน้าบัญชี: license ใช้งานได้ แพ็กเกจฟรี 1 เดือน และสถานะสิทธิ์ \"ใช้แล้ว\"", home.text.includes(freeNumber) && home.text.includes("ใช้งานได้") && home.text.includes(PACKAGE_NAMES.free) && freeState(home.text) === "claimed" && typeof freeAccountId === "string", `state=${freeState(home.text)}`);
+
+  section("ครั้งเดียวต่อผู้ใช้ / ครั้งเดียวต่อบัญชี MT5");
+  form = await request("/account/orders/new", { cookie: S });
+  const freeUsed = findPackage(orderFormPackages(form.text), PACKAGE_NAMES.free);
+  check("ฟอร์มสั่งซื้อ: แพ็กเกจฟรีถูกปิด บอกว่าใช้สิทธิ์แล้ว", Boolean(freeUsed) && freeUsed.disabled && freeUsed.html.includes("คุณใช้สิทธิ์แล้ว"));
+  const second = await post("/account/orders/new", "mt5AccountId", form.text, { packageId: free.id, mt5AccountId: "" }, S);
+  check("รับครั้งที่สอง (ส่งคำขอเอง) → ถูกปฏิเสธ: ใช้สิทธิ์ไปแล้ว", second.status === 200 && second.text.includes("คุณใช้สิทธิ์แพ็กเกจฟรีไปแล้ว"), `status ${second.status} ${second.location}`);
+  const secondSameAccount = await post("/account/orders/new", "mt5AccountId", form.text, { packageId: free.id, mt5AccountId: freeAccountId ?? "" }, S);
+  check("รับครั้งที่สองให้บัญชีเดิม → ถูกปฏิเสธเช่นกัน และรายชื่อไม่เปลี่ยน", secondSameAccount.status === 200 && secondSameAccount.text.includes("คุณใช้สิทธิ์แพ็กเกจฟรีไปแล้ว") && entryDate(await publishedList(), freeNumber) === freeExpiry, `status ${secondSameAccount.status}`);
+
+  if (!canUseDbFixtures) {
+    console.log("  ข้าม  บัญชี MT5 ที่เคยได้แพ็กเกจฟรี ถูกผู้ใช้อีกคนรับซ้ำ — ต้องตั้ง E2E_DB_FIXTURES=1 + DATABASE_URL (ฐานทิ้ง) เพื่อย้ายเจ้าของบัญชีในฐานข้อมูล");
+  } else {
+    // ผู้ใช้อีกคนที่มีเพื่อนสมัครแล้วและยังไม่เคยรับสิทธิ์ — บัญชีที่เคยได้ฟรีถูกย้ายมาเป็นของเขา (จำลองทีมงานย้ายบัญชีให้)
+    const second2 = await registerUser("inviter2", "ผู้ชวนคนที่สอง");
+    const home2 = await request("/account", { cookie: second2.session });
+    const code2 = /\/register\?ref=([0-9A-F]{10})/.exec(home2.text)?.[1];
+    await registerUser("friend2", "เพื่อนคนที่สอง", `?ref=${code2}`, { ref: code2 ?? "" });
+    const moved = await dbExec(
+      "update mt5_accounts set user_id = (select id from users where email = $1) where account_number = $2 and user_id = (select id from users where email = $3) returning id",
+      [second2.email, freeNumber, inviter.email],
+    );
+    check("(ฐานข้อมูล) ย้ายบัญชี MT5 ที่เคยได้แพ็กเกจฟรีไปให้ผู้ใช้คนที่สอง", moved.length === 1 && moved[0].id === freeAccountId, JSON.stringify(moved));
+    try {
+      const form2 = await request("/account/orders/new", { cookie: second2.session });
+      const free2 = findPackage(orderFormPackages(form2.text), PACKAGE_NAMES.free);
+      check("ผู้ใช้คนที่สองมีสิทธิ์รับแพ็กเกจฟรี (เพื่อนสมัครแล้ว ยังไม่เคยรับ) และเห็นบัญชีที่ย้ายมา", Boolean(free2) && !free2.disabled && form2.text.includes(freeNumber));
+      const reused = await post("/account/orders/new", "mt5AccountId", form2.text, { packageId: free.id, mt5AccountId: freeAccountId ?? "" }, second2.session);
+      check("รับแพ็กเกจฟรีให้บัญชี MT5 ที่เคยได้แล้ว → ถูกปฏิเสธ: บัญชีนี้เคยได้รับแพ็กเกจฟรีแล้ว", reused.status === 200 && reused.text.includes("บัญชี MT5 นี้เคยได้รับแพ็กเกจฟรีแล้ว"), `status ${reused.status} ${reused.location}`);
+      // รับแบบยังไม่ระบุบัญชี แล้วเลือกบัญชีนั้นในหน้าคำสั่งซื้อ → ถูกปฏิเสธเช่นกัน
+      const claim2 = await createOrder(second2.session, form2.text, free.id);
+      const claim2Page = await request(claim2.path, { cookie: second2.session });
+      const attach = await post(claim2.path, "mt5AccountId", claim2Page.text, { mt5AccountId: freeAccountId ?? "" }, second2.session);
+      check("รับสิทธิ์ก่อน แล้วเลือกบัญชีที่เคยได้ฟรีในหน้าคำสั่งซื้อ → ถูกปฏิเสธ วันหมดอายุของบัญชีไม่ขยับ", claim2.status === 303 && attach.status === 200 && attach.text.includes("บัญชี MT5 นี้เคยได้รับแพ็กเกจฟรีแล้ว") && entryDate(await publishedList(), freeNumber) === freeExpiry, `claim=${claim2.status} attach=${attach.status} ${attach.location}`);
+      const claim2After = await request(claim2.path, { cookie: second2.session });
+      check("คำสั่งซื้อฟรีของผู้ใช้คนที่สองยังรอเลือกโบรกเกอร์ (สิทธิ์ยังไม่ถูกใช้)", claim2After.text.includes("รับสิทธิ์แล้ว · รอเลือกโบรกเกอร์") && !claim2After.text.includes("เปิดใช้งานแล้ว"));
+    } finally {
+      const back = await dbExec(
+        "update mt5_accounts set user_id = (select id from users where email = $1) where account_number = $2 returning id",
+        [inviter.email, freeNumber],
+      );
+      check("(ฐานข้อมูล) ย้ายบัญชีกลับเจ้าของเดิม", back.length === 1, JSON.stringify(back));
+    }
+  }
+
+  section("ต่ออายุบัญชีที่ได้แพ็กเกจฟรีด้วยแพ็กเกจ 3 เดือน → นับต่อจากวันหมดอายุเดิม");
+  if (freeExpiry !== null && freeAccountId) {
+    form = await request("/account/orders/new", { cookie: S });
+    const renewal = await createOrder(S, form.text, three.id, freeAccountId);
+    check("สั่งซื้อ 3 เดือนให้บัญชีเดิม → คำสั่งซื้อใหม่ ยอด 3,000 บาท", renewal.status === 303 && /^\/account\/orders\/[0-9a-f-]{36}$/.test(renewal.path), `${renewal.status} ${renewal.path}`);
+    const renewalBefore = await request(renewal.path, { cookie: S });
+    check("คำสั่งซื้อต่ออายุผ่านขั้นชำระเงินตามเดิม (รอชำระ มีปุ่มชำระด้วยบัตร)", renewalBefore.text.includes("รอชำระ") && plain(renewalBefore.text).includes("3,000 บาท") && hasForm(renewalBefore.text, 'data-testid="pay-by-card"'));
+    const renewed = await payByMock(S, renewal.path);
+    list = await publishedList();
+    const renewedExpiry = entryDate(list, freeNumber);
+    check("ชำระแล้ว: วันหมดอายุ = วันหมดอายุเดิมของแพ็กเกจฟรี + 105 วัน (ไม่ใช่วันนี้ + 105)", renewed.confirmed.status === 303 && renewedExpiry !== null && dayDiff(freeExpiry, renewedExpiry) === 105 && dayDiff(bangkokToday(), renewedExpiry) === FREE_DAYS + 105, `${freeExpiry} → ${renewedExpiry}`);
+    const renewalPage = await request(renewal.path, { cookie: S });
+    check("หน้าคำสั่งซื้อต่ออายุ: \"เปิดใช้งานแล้ว\" พร้อมวันหมดอายุใหม่", renewalPage.text.includes("เปิดใช้งานแล้ว") && renewedExpiry !== null && plain(renewalPage.text).includes(`ใช้ได้ถึง ${thaiDate(renewedExpiry)}`));
+    const afterRenewal = plain((await request("/account", { cookie: S })).text);
+    const licenceRow = new RegExp(`<tr[^>]*>(?:(?!</tr>)[\\s\\S])*${freeNumber}(?:(?!</tr>)[\\s\\S])*</tr>`).exec(afterRenewal)?.[0] ?? "";
+    check("หน้าบัญชี: ตาราง license ของบัญชีนี้แสดงแพ็กเกจ \"3 เดือน แถม 15 วัน\"", licenceRow.includes(`>${PACKAGE_NAMES.three}<`), licenceRow.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 200));
+  }
+
+  section("แพ็กเกจ 6 เดือน (210 วัน) และ 1 ปี (425 วัน)");
+  for (const [label, target, price, days, offset] of [["6 เดือน", six, "6,000 บาท", 210, 21], ["1 ปี", year, "11,000 บาท", 425, 22]]) {
+    form = await request("/account/orders/new", { cookie: S });
+    const order = await createOrder(S, form.text, target.id);
+    const before = await request(order.path, { cookie: S });
+    check(`${label}: คำสั่งซื้อยอด ${price} รอชำระ`, order.status === 303 && before.text.includes("รอชำระ") && plain(before.text).includes(price), `${order.status} ${order.path}`);
+    const paid = await payByMock(S, order.path);
+    const afterPay = await request(order.path, { cookie: S });
+    await post(order.path, "brokerCode", afterPay.text, { brokerCode: "kohle" }, S);
+    const number = String(Number(freeNumber) + offset);
+    const submit = await prepareMt5Submit(S, order.id, number);
+    const done = await submit();
+    const expiry = entryDate(await publishedList(), number);
+    check(`${label}: ชำระ → เลือกโบรกเกอร์ → กรอกเลขบัญชี → license ${days} วัน`, paid.confirmed.status === 303 && done.status === 303 && expiry !== null && dayDiff(bangkokToday(), expiry) === days, `pay=${paid.confirmed.status} submit=${done.status} ${expiry}`);
+    const page = await request(order.path, { cookie: S });
+    check(`${label}: หน้าคำสั่งซื้อ "เปิดใช้งานแล้ว" (อีก ${days} วัน)`, page.text.includes("เปิดใช้งานแล้ว") && expiry !== null && plain(page.text).includes(`ใช้ได้ถึง ${thaiDate(expiry)} (อีก ${days} วัน)`));
+  }
+  {
+    // คำสั่งซื้อ 3 เดือนที่สร้างไว้ก่อนหน้า (ยังไม่ชำระ): ชำระ → บัญชีใหม่ → 105 วัน
+    const paid = await payByMock(S, paidOrder.path);
+    const afterPay = await request(paidOrder.path, { cookie: S });
+    await post(paidOrder.path, "brokerCode", afterPay.text, { brokerCode: "fisg" }, S);
+    const number = String(Number(freeNumber) + 23);
+    const submit = await prepareMt5Submit(S, paidOrder.id, number);
+    const done = await submit();
+    const expiry = entryDate(await publishedList(), number);
+    check("3 เดือน: ชำระ → เลือกโบรกเกอร์ → กรอกเลขบัญชี → license 105 วัน", paid.confirmed.status === 303 && done.status === 303 && expiry !== null && dayDiff(bangkokToday(), expiry) === 105, `pay=${paid.confirmed.status} submit=${done.status} ${expiry}`);
+  }
+}
+
+/**
  * คำสั่งซื้อที่ชำระแบบจำลองต้องเอามาแลก license ไม่ได้หลังปิด mock (E2E_MOCK_CARRYOVER=bank แล้ว redeem — ดูหัวไฟล์)
  * ใช้ผู้ใช้ carry-<E2E_STAMP>@example.com คนเดียวกันทั้งสองรอบ
  */
@@ -693,6 +1033,31 @@ async function mockCarryover(phase) {
   check("เลขบัญชีนั้นไม่อยู่ในรายชื่อที่เผยแพร่ และรายชื่อไม่เปลี่ยน", entriesOf(list, number).length === 0 && list === listBefore, list.slice(0, 120));
   const homeAfter = await request("/account", { cookie: session });
   check("หน้าบัญชี: คำสั่งซื้อนั้นขึ้น \"รอทีมงานตรวจสอบ\" และบัญชียังไม่มี license", homeAfter.text.includes("รอทีมงานตรวจสอบ") && homeAfter.text.includes(number) && homeAfter.text.includes("ยังไม่มี license"));
+
+  // ---- แพ็กเกจฟรีจากการชวนเพื่อนไม่ใช่การชำระเงินจำลอง: mock ปิดอยู่ก็ยังรับและเปิด license ได้ ----
+  section("mock ปิดอยู่: แพ็กเกจฟรีจากการชวนเพื่อนยังเปิด license ได้ (คำสั่งซื้อจำลองด้านบนยังถูกกัน)");
+  const inviter = await registerUser("carry-inviter", "ผู้ชวน carry");
+  check("สมัครผู้ชวน", typeof inviter.session === "string", `status ${inviter.res.status}`);
+  const inviterHome = await request("/account", { cookie: inviter.session });
+  const code = /\/register\?ref=([0-9A-F]{10})/.exec(inviterHome.text)?.[1];
+  const friend = await registerUser("carry-friend", "เพื่อน carry", `?ref=${code}`, { ref: code ?? "" });
+  check("เพื่อนสมัครผ่านลิงก์ชวน", typeof code === "string" && typeof friend.session === "string", `code=${code} status=${friend.res.status}`);
+  const form = await request("/account/orders/new", { cookie: inviter.session });
+  const freePkg = findPackage(orderFormPackages(form.text), PACKAGE_NAMES.free);
+  const claimed = await createOrder(inviter.session, form.text, freePkg?.id ?? "");
+  check("รับแพ็กเกจฟรี → 303 ไปหน้าคำสั่งซื้อ (ไม่มีขั้นชำระเงิน แม้ระบบชำระเงินปิดอยู่)", claimed.status === 303 && /^\/account\/orders\/[0-9a-f-]{36}$/.test(claimed.path), `${claimed.status} ${claimed.path}`);
+  let claimPage = await request(claimed.path, { cookie: inviter.session });
+  check("หน้าคำสั่งซื้อฟรี: ไม่มีข้อความ \"ระบบชำระเงินยังไม่เปิดให้บริการ\" และมีตัวเลือกโบรกเกอร์", !claimPage.text.includes("ระบบชำระเงินยังไม่เปิดให้บริการ") && claimPage.text.includes('name="brokerCode"'));
+  await post(claimed.path, "brokerCode", claimPage.text, { brokerCode: "hfm" }, inviter.session);
+  const freeNumber = String(Number(number) + 1);
+  const submitFree = await prepareMt5Submit(inviter.session, claimed.id, freeNumber);
+  const freeSubmitted = await submitFree();
+  const listAfter = await publishedList();
+  const freeExpiry = entryDate(listAfter, freeNumber);
+  check("กรอกเลขบัญชี → license จากแพ็กเกจฟรีเปิดและอยู่ในรายชื่อ (วันนี้ + 30 วัน)", freeSubmitted.status === 303 && freeExpiry !== null && dayDiff(bangkokToday(), freeExpiry) === FREE_DAYS, `${freeSubmitted.status} ${freeExpiry}`);
+  claimPage = await request(claimed.path, { cookie: inviter.session });
+  check("หน้าคำสั่งซื้อฟรี: \"เปิดใช้งานแล้ว\" ไม่ถูกกันแบบคำสั่งซื้อจำลอง", claimPage.text.includes("เปิดใช้งานแล้ว") && !claimPage.text.includes('data-testid="activation-blocked"'));
+  check("เลขบัญชีของคำสั่งซื้อจำลองยังไม่อยู่ในรายชื่อ", entriesOf(listAfter, number).length === 0);
 }
 
 /** ฟอร์มที่มี `marker` ต้องไม่มี input/select/textarea อื่นนอกจากช่องซ่อน $ACTION_* */
@@ -767,6 +1132,30 @@ async function main() {
     const home = await request("/");
     const install = await request("/install");
     const faq = await request("/faq");
+
+    // รายการแพ็กเกจและราคาอ่านจากตาราง packages (หลัง npm run db:seed) — ทั้งหน้าแพ็กเกจและหน้าแรก
+    for (const [label, page] of [["หน้าแพ็กเกจ", pricing], ["หน้าแรก", home]]) {
+      const html = plain(page.text);
+      // รายการแพ็กเกจถูกส่งตามมาใน <Suspense> (อ่านฐานข้อมูลตอนมีคำขอ) — ตัดเฉพาะส่วน HTML ของการ์ด ไม่รวม script ที่ตามหลัง
+      const start = html.indexOf('data-testid="package-cards"');
+      const end = start < 0 ? -1 : html.indexOf("<script", start);
+      const cards = start < 0 ? "" : html.slice(start, end < 0 ? undefined : end);
+      const codes = [...cards.matchAll(/data-package="([a-z_]+)"/g)].map((m) => m[1]);
+      check(`${label}: แสดง 4 แพ็กเกจจากฐานข้อมูล ตามลำดับ ฟรี → 3 เดือน → 6 เดือน → 1 ปี (ไม่มีรายเดือน/ตลอดชีพ)`, codes.join() === "free_referral,three_months,six_months,yearly", codes.join());
+      const card = (code) => new RegExp(`data-package="${code}"[\\s\\S]*?(?=data-package="|$)`).exec(cards)?.[0] ?? "";
+      const expected = [
+        ["free_referral", PACKAGE_NAMES.free, "ฟรี", "ใช้งาน 30 วัน"],
+        ["three_months", PACKAGE_NAMES.three, "3,000 บาท", "ใช้งาน 90 วัน + แถม 15 วัน (รวม 105 วัน)"],
+        ["six_months", PACKAGE_NAMES.six, "6,000 บาท", "ใช้งาน 180 วัน + แถม 30 วัน (รวม 210 วัน)"],
+        ["yearly", PACKAGE_NAMES.year, "11,000 บาท", "ใช้งาน 365 วัน + แถม 60 วัน (รวม 425 วัน)"],
+      ];
+      for (const [code, name, price, period] of expected) {
+        const c = card(code);
+        check(`${label}: ${name} · ${price} · ${period}`, c.includes(`>${name}<`) && c.includes(`>${price}<`) && c.includes(`>${period}<`), c.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").slice(0, 160));
+      }
+      check(`${label}: แพ็กเกจฟรีบอกเงื่อนไขชวนเพื่อน 1 คน และไม่มี "สอบถามราคา" ค้างอยู่`, card("free_referral").includes("เงื่อนไข: ชวนเพื่อนสมัครสมาชิก 1 คน") && !cards.includes("สอบถามราคา"));
+    }
+    check("หน้าแพ็กเกจ: ปุ่มของแต่ละแพ็กเกจพาไปสมัครพร้อม code ของแพ็กเกจนั้น และอธิบายการชวนเพื่อน", ["free_referral", "three_months", "six_months", "yearly"].every((c) => pricing.text.includes(`href="/register?package=${c}"`)) && pricing.text.includes('data-testid="referral-info"'));
     check("หน้าแรก/แพ็กเกจ/ติดตั้ง/FAQ ไม่สัญญาว่าจะส่งไฟล์หรือแจ้งเตือนทางอีเมล", [home, pricing, install, faq].every((r) => r.status === 200 && !/รับไฟล์ติดตั้งทางอีเมล|ได้รับอีเมล|แจ้งเตือนทางอีเมล/.test(r.text)));
     check("ไม่มีลิงก์ LINE ที่กดแล้วไม่ไปไหน (href=\"#line\")", [home, pricing, install, faq].every((r) => !r.text.includes('href="#line"')));
   }
@@ -858,6 +1247,7 @@ async function main() {
   }
 
   await purchaseFlow(session);
+  if (process.env.E2E_EXPECT_PAYMENT !== "unavailable" && process.env.E2E_EXPECT_PUBLISH !== "fail") await referralFlow();
 
   section("ออกจากระบบ");
   {

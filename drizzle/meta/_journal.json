@@ -36,6 +36,13 @@
       "when": 1794823994369,
       "tag": "0004_card_payment_auto_activation",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794963213820,
+      "tag": "0005_package_lineup_referral",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getPaymentInfo, safeExternalUrl } from "./config";
+import { getPaymentInfo, safeExternalUrl, siteOriginFromEnv } from "./config";
 
 describe("getPaymentInfo", () => {
   const full = { PAYMENT_BANK_NAME: "ธนาคารตัวอย่าง", PAYMENT_ACCOUNT_NAME: "บจก. ตัวอย่าง", PAYMENT_ACCOUNT_NUMBER: "000-0-00000-0" };
@@ -38,5 +38,18 @@ describe("safeExternalUrl", () => {
   it("undefined / null → null", () => {
     expect(safeExternalUrl(undefined)).toBeNull();
     expect(safeExternalUrl(null)).toBeNull();
+  });
+});
+
+describe("siteOriginFromEnv (NEXT_PUBLIC_SITE_URL → ต้นทางของลิงก์ชวนเพื่อน)", () => {
+  it("คืนเฉพาะ origin ของ URL แบบ http/https", () => {
+    expect(siteOriginFromEnv("https://cmeoi.example/th/?x=1")).toBe("https://cmeoi.example");
+    expect(siteOriginFromEnv(" http://localhost:3000 ")).toBe("http://localhost:3000");
+  });
+
+  it("ไม่ได้ตั้ง / ไม่ใช่ URL / scheme อื่น → null (หน้าเว็บใช้ origin ของเบราว์เซอร์แทน)", () => {
+    for (const v of [undefined, null, "", "   ", "cmeoi.example", "javascript:alert(1)", "ftp://x.example"]) {
+      expect(siteOriginFromEnv(v), String(v)).toBeNull();
+    }
   });
 });

@@ -145,22 +145,28 @@ export const screenshots = [
   },
 ];
 
-export type PackageInfo = {
-  code: "monthly" | "six_months" | "yearly" | "lifetime";
-  name: string;
-  period: string;
-  priceThb: number | null; // null = ยังไม่กำหนดราคา
-  note?: string;
-  highlight?: boolean;
+/**
+ * ข้อความประกอบของแต่ละแพ็กเกจ (key = packages.code) — "รายการแพ็กเกจ ชื่อ ราคา อายุ วันแถม และเงื่อนไขของแพ็กเกจฟรี"
+ * ไม่อยู่ที่นี่: หน้าเว็บอ่านจากตาราง packages ที่เดียว (ตั้งค่าด้วย `npm run db:seed` — src/lib/purchase/package-lineup.ts)
+ * ที่นี่มีแค่คำโปรยและการเน้นสี แพ็กเกจที่ไม่มีใน record นี้ก็แสดงได้ตามปกติ
+ */
+export const packageCopy: Record<string, { note?: string; highlight?: boolean }> = {
+  free_referral: { note: "ไม่ต้องชำระเงิน รับได้ 1 ครั้งต่อผู้ใช้ และ 1 ครั้งต่อบัญชี MT5" },
+  three_months: { note: "เหมาะกับการเริ่มใช้งานจริง" },
+  yearly: { note: "ราคาต่อวันต่ำที่สุด", highlight: true },
 };
 
-/** TODO: ใส่ราคาจริงเมื่อลูกค้ายืนยัน (ตอนนี้แสดง "สอบถามราคา") */
-export const packages: PackageInfo[] = [
-  { code: "monthly", name: "รายเดือน", period: "30 วัน", priceThb: null, note: "เหมาะกับการทดลองใช้งานจริง" },
-  { code: "six_months", name: "6 เดือน", period: "180 วัน", priceThb: null },
-  { code: "yearly", name: "รายปี", period: "365 วัน", priceThb: null, highlight: true, note: "คุ้มที่สุดสำหรับผู้ใช้ประจำ" },
-  { code: "lifetime", name: "ตลอดชีพ", period: "ไม่มีวันหมดอายุ", priceThb: null, note: "จ่ายครั้งเดียว อัปเดตฟรีตลอด" },
-];
+/** ข้อความของการชวนเพื่อน (หน้าแพ็กเกจ / หน้าสั่งซื้อ / หน้าบัญชี) — จำนวนเพื่อนที่ต้องชวนอยู่ใน REFERRALS_REQUIRED_FOR_FREE */
+export const referralCopy = {
+  title: "ชวนเพื่อน รับแพ็กเกจฟรี",
+  steps: [
+    "สมัครสมาชิก แล้วคัดลอกลิงก์ชวนเพื่อนจากหน้าบัญชีของฉัน",
+    "ส่งลิงก์ให้เพื่อน เมื่อเพื่อนสมัครสมาชิกผ่านลิงก์ของคุณ ระบบนับให้อัตโนมัติ",
+    "ครบตามเงื่อนไขแล้ว กดรับแพ็กเกจฟรีในหน้าสั่งซื้อ ไม่มีขั้นชำระเงิน จากนั้นเลือกโบรกเกอร์และกรอกเลขบัญชี MT5",
+  ],
+  limits: "แพ็กเกจฟรีรับได้ 1 ครั้งต่อผู้ใช้ และ 1 ครั้งต่อบัญชี MT5",
+  inviteHint: "ส่งลิงก์นี้ให้เพื่อน เมื่อเพื่อนสมัครสมาชิกผ่านลิงก์ ระบบนับให้อัตโนมัติ (เพื่อนต้องเปิดลิงก์นี้ก่อนสมัคร สมัครไปแล้วนับย้อนหลังไม่ได้)",
+};
 
 export const packageIncludes = [
   "ใช้ได้กับบัญชี MT5 ที่ลงทะเบียนไว้ 1 บัญชี",

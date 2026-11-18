@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { NextRequest } from "next/server";
 import { describe, expect, it } from "vitest";
-import { SESSION_COOKIE_NAME } from "./lib/auth/constants";
-import { safeNextPath } from "./lib/auth/validation";
+import { REFERRAL_COOKIE_MAX_AGE_SECONDS, REFERRAL_COOKIE_NAME, SESSION_COOKIE_NAME } from "./lib/auth/constants";
+import { parseReferralCode, safeNextPath } from "./lib/auth/validation";
 import { config, proxy } from "./proxy";
 
 // proxy.ts เขียนชื่อ cookie ซ้ำเอง (ไม่ import โมดูลร่วม) — เทสนี้กันสองที่เพี้ยนจากกัน
@@ -22,8 +22,8 @@ describe("src/proxy.ts", () => {
     expect(source).toContain(`const SESSION_COOKIE_NAME = "${SESSION_COOKIE_NAME}";`);
   });
 
-  it("คุมทั้ง /account และ /admin", () => {
-    expect(config.matcher).toEqual(["/account/:path*", "/admin/:path*"]);
+  it("คุมทั้ง /account และ /admin และผ่านหน้า /register (จำรหัสชวนเพื่อน)", () => {
+    expect(config.matcher).toEqual(["/account/:path*", "/admin/:path*", "/register"]);
   });
 
   it("export ชื่อ proxy และไม่ import โมดูลของแอป", () => {
@@ -60,6 +60,73 @@ describe("src/proxy.ts", () => {
     const res = proxy(request("/account", { cookie: `${SESSION_COOKIE_NAME}=anything` }));
     expect(passedThrough(res)).toBe(true);
     expect(res.headers.get("location")).toBeNull();
+  });
+
+  describe("จำรหัสชวนเพื่อนที่ /register?ref=", () => {
+    const CODE = "A1B2C3D4E5";
+    const referralCookie = (res: ReturnType<typeof proxy>) => res.cookies.get(REFERRAL_COOKIE_NAME);
+
+    it("ใช้ชื่อ cookie และอายุเดียวกับ constants.ts", () => {
+      expect(source).toContain(`const REFERRAL_COOKIE_NAME = "${REFERRAL_COOKIE_NAME}";`);
+      expect(source).toContain(`const REFERRAL_COOKIE_MAX_AGE_SECONDS = ${REFERRAL_COOKIE_MAX_AGE_SECONDS};`);
+    });
+
+    it("รหัสถูกรูปแบบ → ตั้ง cookie httpOnly / SameSite=Lax อายุ 7 วัน และปล่อยผ่าน (ไม่ redirect แม้ไม่มี session)", () => {
+      for (const path of [`/register?ref=${CODE}`, `/register?ref=${CODE}&package=three_months`, `/register?package=yearly&ref=${CODE}`]) {
+        const res = proxy(request(path));
+        expect(passedThrough(res)).toBe(true);
+        expect(res.headers.get("location")).toBeNull();
+        expect(referralCookie(res)).toMatchObject({
+          value: CODE,
+          httpOnly: true,
+          sameSite: "lax",
+          path: "/",
+          maxAge: 7 * 24 * 60 * 60,
+        });
+      }
+    });
+
+    it("รับและปฏิเสธรหัสชุดเดียวกับ parseReferralCode (ค่าที่เก็บคือค่าที่ parse แล้ว)", () => {
+      for (const raw of [
+        CODE,
+        CODE.toLowerCase(),
+        ` ${CODE} `,
+        "0000000000",
+        "",
+        "abc",
+        "A1B2C3D4E",
+        "A1B2C3D4E5F",
+        "ZZZZZZZZZZ",
+        "A1B2-C3D4E5",
+        "' or 1=1 --",
+        "x".repeat(500),
+      ]) {
+        const res = proxy(request(`/register?ref=${encodeURIComponent(raw)}`));
+        expect(passedThrough(res)).toBe(true);
+        expect(referralCookie(res)?.value ?? null).toBe(parseReferralCode(raw));
+      }
+    });
+
+    it("ไม่มี ?ref= หรือรหัสผิดรูปแบบ → ไม่แตะ cookie เลย (รหัสที่จำไว้ก่อนหน้ายังอยู่)", () => {
+      for (const path of ["/register", "/register?package=three_months", "/register?ref=nope"]) {
+        const res = proxy(request(path, { cookie: `${REFERRAL_COOKIE_NAME}=${CODE}` }));
+        expect(passedThrough(res)).toBe(true);
+        expect(res.headers.get("set-cookie")).toBeNull();
+      }
+    });
+
+    it("ลิงก์ชวนใหม่ทับรหัสเดิม และ POST (ส่งฟอร์มสมัคร) ไม่ตั้ง cookie", () => {
+      const res = proxy(request("/register?ref=0F0F0F0F0F", { cookie: `${REFERRAL_COOKIE_NAME}=${CODE}` }));
+      expect(referralCookie(res)?.value).toBe("0F0F0F0F0F");
+      const post = proxy(request(`/register?ref=${CODE}`, { method: "POST" }));
+      expect(passedThrough(post)).toBe(true);
+      expect(post.headers.get("set-cookie")).toBeNull();
+    });
+
+    it("หน้าอื่นที่มี ?ref= ไม่ตั้ง cookie (เฉพาะ /register)", () => {
+      const res = proxy(request(`/account?ref=${CODE}`, { cookie: `${SESSION_COOKIE_NAME}=anything` }));
+      expect(res.headers.get("set-cookie")).toBeNull();
+    });
   });
 
   it("POST ที่ไม่มี cookie (Server Action หลัง session หาย) → ปล่อยผ่าน ไม่ redirect", () => {

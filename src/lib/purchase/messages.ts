@@ -36,9 +36,14 @@ export const PURCHASE_REASONS = [
   "license_suspended",
   "payment_unavailable",
   "activation_pending",
+  "activation_pending_free",
   "activation_retry_rate_limited",
   "mock_payment",
   "duplicate_own_use_existing",
+  "free_referral_required",
+  "free_already_claimed",
+  "free_account_used",
+  "free_claim_invalid",
 ] as const;
 
 export type PurchaseReason = (typeof PURCHASE_REASONS)[number];
@@ -65,7 +70,7 @@ export const purchaseMessages: Record<PurchaseReason, string> = {
   lifetime_active: "บัญชีนี้มี license ตลอดชีพที่ใช้งานอยู่แล้ว ไม่ต้องต่ออายุ",
   order_not_found: "ไม่พบคำสั่งซื้อนี้",
   order_not_cancellable:
-    "ยกเลิกได้เฉพาะคำสั่งซื้อที่ยังรอชำระ หากชำระเงินแล้ว กรุณาติดต่อทีมงานทาง LINE",
+    "ยกเลิกได้เฉพาะคำสั่งซื้อที่ยังรอชำระ หรือแพ็กเกจฟรีที่ยังไม่ได้เปิด license หากชำระเงินแล้ว กรุณาติดต่อทีมงานทาง LINE",
   order_not_attachable: "คำสั่งซื้อนี้ผูกบัญชี MT5 ไม่ได้ในสถานะปัจจุบัน",
   slip_required: "กรุณาเลือกไฟล์สลิป",
   empty: "ไฟล์ว่างเปล่า กรุณาเลือกไฟล์สลิปใหม่",
@@ -86,9 +91,17 @@ export const purchaseMessages: Record<PurchaseReason, string> = {
   payment_unavailable: "ระบบชำระเงินยังไม่เปิดให้บริการ กรุณาสอบถามทาง LINE",
   activation_pending:
     "ระบบยังเปิดใช้งานไม่เสร็จ การชำระเงินและเลขบัญชีของคุณถูกบันทึกแล้ว ไม่ต้องชำระซ้ำ กรุณาลองตรวจสอบอีกครั้งในอีกสักครู่ หรือติดต่อทีมงานทาง LINE",
+  // แพ็กเกจฟรีจากการชวนเพื่อน: ไม่มีการชำระเงิน จึงไม่พูดถึง "การชำระเงิน/ชำระซ้ำ" (ข้อความเดียวกับประกาศในหน้าคำสั่งซื้อ)
+  activation_pending_free:
+    "ระบบยังเปิดใช้งานไม่เสร็จ สิทธิ์แพ็กเกจฟรีและเลขบัญชีของคุณถูกบันทึกแล้ว ไม่ต้องทำรายการใหม่ กรุณาลองตรวจสอบอีกครั้งในอีกสักครู่ หรือติดต่อทีมงานทาง LINE",
   activation_retry_rate_limited: "ตรวจสอบสถานะบ่อยเกินไป กรุณารอสักครู่แล้วลองใหม่",
   mock_payment:
     "คำสั่งซื้อนี้ชำระด้วยการจำลองการชำระเงิน (โหมดทดสอบ) ซึ่งระบบนี้ไม่เปิด license ให้ กรุณาติดต่อทีมงานทาง LINE",
+  free_referral_required:
+    "แพ็กเกจฟรีรับได้เมื่อมีเพื่อนสมัครสมาชิกผ่านลิงก์ชวนของคุณแล้วอย่างน้อย 1 คน ดูลิงก์ชวนเพื่อนได้ที่หน้าบัญชีของฉัน",
+  free_already_claimed: "คุณใช้สิทธิ์แพ็กเกจฟรีไปแล้ว รับได้ 1 ครั้งต่อผู้ใช้",
+  free_account_used: "บัญชี MT5 นี้เคยได้รับแพ็กเกจฟรีแล้ว รับได้ 1 ครั้งต่อบัญชี MT5 กรุณาใช้บัญชี MT5 อื่น",
+  free_claim_invalid: "ไม่พบสิทธิ์แพ็กเกจฟรีของคำสั่งซื้อนี้ กรุณาติดต่อทีมงานทาง LINE",
   duplicate_own_use_existing:
     "คุณลงทะเบียนเลขบัญชีนี้ไว้แล้ว ไม่ต้องกรอกใหม่ กลับไปหน้าคำสั่งซื้อแล้วเลือกบัญชีนี้ที่หัวข้อ \"ใช้บัญชี MT5 ที่ลงทะเบียนไว้แล้ว\"",
 };

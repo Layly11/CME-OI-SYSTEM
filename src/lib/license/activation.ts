@@ -1,10 +1,12 @@
 import "server-only";
 import { and, asc, eq, isNotNull, isNull } from "drizzle-orm";
 import { getDb, schema } from "@/db";
-import { isUniqueViolation, safeErrorSummary } from "@/lib/db-errors";
-import { isMockPaymentBlocked } from "@/lib/payment/config";
+import { isDeadlock, isUniqueViolation, safeErrorSummary } from "@/lib/db-errors";
+import { isMockPaymentBlocked, REFERRAL_PAYMENT_PROVIDER } from "@/lib/payment/config";
 import { todayInBangkok } from "@/lib/purchase/format";
 import type { Tx } from "@/lib/purchase/mt5-release";
+import { isFreeReferralPackage, packageTotalDays } from "@/lib/purchase/packages";
+import { type FreeClaimBlock, freeClaimBlockInTx } from "@/lib/purchase/referral";
 import { planActivation } from "./activation-rules";
 
 /**
@@ -22,13 +24,20 @@ import { planActivation } from "./activation-rules";
  * - เปลี่ยนเลขบัญชีหลังเปิด license แล้วยังไม่รองรับ
  * - ไม่มีการส่งอีเมลแจ้งลูกค้า
  * - อายุแพ็กเกจอ่านตอนเปิด license (ไม่ได้เก็บไว้ที่คำสั่งซื้อ) — ค่าที่ใช้จริงบันทึกใน license_activations
+ *   อายุที่ให้ = อายุหลัก + วันแถมของแพ็กเกจ (packageTotalDays) และ license_activations.duration_days เก็บ "ยอดรวมที่ให้จริง"
  * - คำสั่งซื้อที่ชำระแล้วแต่ถูกกัน (blocked) ต้องให้ทีมงานจัดการเอง ดู audit license.activate_blocked
  *
  * ด่านของการชำระเงินจำลอง: คำสั่งซื้อที่ "ชำระ" ด้วย provider mock เปิด license ได้เฉพาะเมื่อค่าตั้งปัจจุบันยังอนุญาต mock
  * (ตรวจตอนเปิด ไม่ใช่แค่ตอนชำระ) — คำสั่งซื้อจำลองที่ค้างไว้จึงเอามาแลกเป็น license จริงหลังเปิดระบบจริงไม่ได้ (blocked: mock_payment)
  * การกันนี้ไม่ถาวร: ตรวจใหม่ทุกครั้งที่เรียก ถ้ารันในค่าตั้งที่อนุญาต mock ก็เปิดได้ตามปกติ
+ *
+ * ด่านของแพ็กเกจฟรีจากการชวนเพื่อน (provider "referral" — เป็นคำสั่งซื้อจริง ไม่ผ่านด่านของ mock ด้านบน):
+ * สิทธิ์ถูกตรวจตอนสร้างคำสั่งซื้อแล้ว (createOrder) และตรวจซ้ำที่นี่ก่อนเปิด license ภายใต้ lock ของแถวบัญชี —
+ * ต้องมีแถว referral_claims ของคำสั่งซื้อนี้ที่ยังไม่ถูกใช้, ยังมีเพื่อนที่สมัครแล้ว, และบัญชี MT5 นี้ยังไม่เคยได้แพ็กเกจฟรี
+ * เปิดสำเร็จแล้วบันทึกบัญชีลงแถวสิทธิ์ (mt5_account_id unique = ครั้งเดียวต่อบัญชี บังคับโดยฐานข้อมูล) ใน transaction เดียวกัน
+ * "referral" กับแพ็กเกจที่ไม่ใช่แพ็กเกจฟรี หรือแพ็กเกจฟรีที่ไม่ได้มาทาง "referral" → free_claim_invalid (ไม่ควรเกิด: markOrderPaidInTx กันไว้แล้ว)
  */
-export type ActivationBlockReason = "license_suspended" | "lifetime_active" | "mock_payment";
+export type ActivationBlockReason = "license_suspended" | "lifetime_active" | "mock_payment" | FreeClaimBlock;
 
 export type ActivateResult =
   | { status: "activated"; licenseId: string; expiresAt: string; kind: "new" | "extended" | "reactivated" }
@@ -67,7 +76,12 @@ async function auditBlocked(tx: Tx, orderId: string, userId: string, reason: Act
 type Env = Record<string, string | undefined>;
 
 async function activateInTx(tx: Tx, orderId: string, today: string, env: Env): Promise<ActivateResult> {
-  // ลำดับล็อก: คำสั่งซื้อ → บัญชี MT5 → license (โค้ดอื่นล็อก user → คำสั่งซื้อ / user → บัญชี จึงไม่เป็นวง)
+  // ลำดับล็อก: คำสั่งซื้อ (FOR UPDATE) → บัญชี MT5 (FOR NO KEY UPDATE) → license (FOR UPDATE)
+  // โค้ดอื่น (repo.ts) ล็อก user → คำสั่งซื้อ / user → บัญชี ลำดับแถวที่ล็อกตรงๆ จึงไม่เป็นวง แต่ยังมี lock ที่ PostgreSQL ขอเอง
+  // ตอน INSERT แถวที่มี foreign key (FOR KEY SHARE บนแถวที่ถูกอ้าง): INSERT licenses ด้านล่างขอ KEY SHARE ของแถว user
+  // และ INSERT orders ใน createOrder ขอ KEY SHARE ของแถวบัญชี MT5 — ถ้าอีกฝั่งถือแถวนั้นด้วย FOR UPDATE จะเป็นวง (deadlock 40P01 เคยเกิดจริง)
+  // จึงให้ lock ที่มีไว้ "เข้าคิว" เฉยๆ (lockUser และแถวบัญชีที่นี่) เป็น FOR NO KEY UPDATE ซึ่งไม่ชนกับ KEY SHARE
+  // และ activateOrderIfReady ลองใหม่ 1 ครั้งเมื่อเจอ deadlock เผื่อวงอื่นที่ยังไม่รู้จัก
   const [order] = await tx
     .select({
       id: schema.orders.id,
@@ -94,11 +108,12 @@ async function activateInTx(tx: Tx, orderId: string, today: string, env: Env): P
   }
 
   // ล็อกแถวบัญชี: คำสั่งซื้อต่างรายการของบัญชีเดียวกันจึงเปิดทีละรายการ (ต่ออายุสองรายการพร้อมกัน = บวกอายุครบทั้งคู่)
+  // FOR NO KEY UPDATE: ยังชนกันเองและชนกับ FOR UPDATE ของการลบบัญชี แต่ไม่ขวาง KEY SHARE ของ INSERT orders ที่อ้างบัญชีนี้
   const [account] = await tx
     .select({ id: schema.mt5Accounts.id })
     .from(schema.mt5Accounts)
     .where(eq(schema.mt5Accounts.id, order.mt5AccountId))
-    .for("update");
+    .for("no key update");
   if (!account) return { status: "not_ready", reason: "no_account" };
 
   const licenses = await tx
@@ -118,14 +133,37 @@ async function activateInTx(tx: Tx, orderId: string, today: string, env: Env): P
   }
 
   const [pkg] = await tx
-    .select({ id: schema.packages.id, durationDays: schema.packages.durationDays })
+    .select({
+      id: schema.packages.id,
+      code: schema.packages.code,
+      durationDays: schema.packages.durationDays,
+      bonusDays: schema.packages.bonusDays,
+    })
     .from(schema.packages)
     .where(eq(schema.packages.id, order.packageId))
     .limit(1);
   if (!pkg) throw new Error("activateOrderIfReady: ไม่พบแพ็กเกจของคำสั่งซื้อ");
 
+  // แพ็กเกจฟรีจากการชวนเพื่อน: ตรวจสิทธิ์ซ้ำก่อนเปิด (ครั้งเดียวต่อผู้ใช้ / ต่อบัญชี MT5 / ยังมีเพื่อนที่สมัครแล้ว)
+  const freePackage = isFreeReferralPackage(pkg);
+  const viaReferral = order.paymentProvider === REFERRAL_PAYMENT_PROVIDER;
+  let freeClaimId: string | null = null;
+  if (freePackage || viaReferral) {
+    const check: Awaited<ReturnType<typeof freeClaimBlockInTx>> =
+      freePackage && viaReferral
+        ? await freeClaimBlockInTx(tx, { id: order.id, userId: order.userId }, account.id)
+        : { block: "free_claim_invalid" };
+    if (check.block !== null) {
+      await auditBlocked(tx, order.id, order.userId, check.block);
+      return { status: "blocked", reason: check.block };
+    }
+    freeClaimId = check.claimId;
+  }
+
+  // อายุที่ให้จริง = อายุหลัก + วันแถม (null = ตลอดชีพ)
+  const durationDays = packageTotalDays(pkg);
   const current = licenses.find((l) => l.status === "active") ?? null;
-  const plan = planActivation({ durationDays: pkg.durationDays, current, today });
+  const plan = planActivation({ durationDays, current, today });
   if (!plan.ok) {
     await auditBlocked(tx, order.id, order.userId, plan.reason);
     return { status: "blocked", reason: plan.reason };
@@ -167,10 +205,19 @@ async function activateInTx(tx: Tx, orderId: string, today: string, env: Env): P
     licenseId,
     mt5AccountId: account.id,
     packageId: pkg.id,
-    durationDays: pkg.durationDays,
+    durationDays,
     previousExpiresAt: plan.previousExpiresAt,
     newExpiresAt: plan.expiresAt,
   });
+
+  if (freeClaimId !== null) {
+    // สิทธิ์ถูกใช้แล้ว: ผูกกับบัญชีนี้ถาวร — mt5_account_id unique ทำให้บัญชีเดียวกันรับแพ็กเกจฟรีซ้ำไม่ได้แม้มีทางเขียนอื่นพลาด
+    // (ชน unique = transaction นี้ถูกยกเลิกทั้งก้อน ไม่มี license ถูกเปิด)
+    await tx
+      .update(schema.referralClaims)
+      .set({ mt5AccountId: account.id, activatedAt: new Date() })
+      .where(eq(schema.referralClaims.id, freeClaimId));
+  }
 
   // audit เก็บเฉพาะ id และวันที่ — ไม่มีเลขบัญชี MT5 (actor = null: ระบบทำเอง ไม่ใช่แอดมิน)
   await tx.insert(schema.auditLogs).values({
@@ -184,6 +231,10 @@ async function activateInTx(tx: Tx, orderId: string, today: string, env: Env): P
       kind: plan.kind,
       previousExpiresAt: plan.previousExpiresAt,
       newExpiresAt: plan.expiresAt,
+      // อายุที่ให้: อายุหลัก + วันแถม ณ ตอนเปิด (แก้แพ็กเกจภายหลังไม่กระทบบันทึกนี้)
+      baseDays: pkg.durationDays,
+      bonusDays: pkg.durationDays === null ? 0 : pkg.bonusDays,
+      ...(freeClaimId !== null ? { freeClaim: true } : {}),
     },
   });
 
@@ -207,7 +258,9 @@ export async function activateOrderIfReady(orderId: string, opts: { today?: stri
         if (done) return { status: "already_activated", licenseId: done.licenseId, expiresAt: done.newExpiresAt };
       }
       // มีแถว active ของบัญชีนี้โผล่มาระหว่างทาง (ทางเขียนอื่นที่ไม่ได้ล็อกแถวบัญชี) → ลองใหม่ 1 ครั้งเพื่อต่ออายุแถวนั้นแทน
-      if (isUniqueViolation(err, ACTIVE_UNIQUE) && attempt === 0) continue;
+      // PostgreSQL เลือก transaction นี้เป็นฝ่ายแพ้ของ deadlock (ถูกยกเลิกทั้งก้อน ไม่มีอะไรค้าง) → ลองใหม่ 1 ครั้งเช่นกัน
+      // อีกฝ่ายจบไปแล้ว รอบใหม่จึงเห็นสถานะล่าสุด (เช่นคำสั่งซื้อถูกยกเลิก → not_ready) แทนที่ลูกค้าจะค้าง "กำลังเปิดใช้งาน"
+      if ((isUniqueViolation(err, ACTIVE_UNIQUE) || isDeadlock(err)) && attempt === 0) continue;
       throw err;
     }
   }

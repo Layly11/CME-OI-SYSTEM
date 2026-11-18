@@ -22,6 +22,18 @@ export { LIVE_FIREBASE_LICENSE_PATH, targetsLiveLicenseList };
 export const PAYMENT_PROVIDER_IDS = ["mock"] as const;
 export type PaymentProviderId = (typeof PAYMENT_PROVIDER_IDS)[number];
 
+/**
+ * ค่าของ orders.payment_provider สำหรับแพ็กเกจฟรีจากการชวนเพื่อน (ยอด 0 บาท ไม่มีขั้นชำระเงิน)
+ * ไม่ใช่ผู้ให้บริการรับชำระ จึงไม่อยู่ใน PAYMENT_PROVIDER_IDS และตั้งผ่าน env PAYMENT_PROVIDER ไม่ได้
+ * และ "ไม่ใช่การชำระเงินจำลอง": ด่านของ mock ทุกด่าน (isMockPaymentBlocked, การเผยแพร่ไปรายชื่อจริง, license:purge-mock)
+ * เทียบกับคำว่า "mock" ตรงตัว คำสั่งซื้อแบบนี้จึงเป็นคำสั่งซื้อจริงในทุกค่าตั้ง — สิทธิ์ถูกตรวจด้วยกติกาของมันเอง
+ * (src/lib/purchase/referral.ts: มีเพื่อนสมัครแล้ว + ครั้งเดียวต่อผู้ใช้ + ครั้งเดียวต่อบัญชี MT5)
+ */
+export const REFERRAL_PAYMENT_PROVIDER = "referral";
+/** ทุกค่าที่ markOrderPaid รับ: ผู้ให้บริการรับชำระ หรือสิทธิ์ฟรีจากการชวนเพื่อน */
+export type PaidVia = PaymentProviderId | typeof REFERRAL_PAYMENT_PROVIDER;
+export const PAID_VIA_IDS: readonly PaidVia[] = [...PAYMENT_PROVIDER_IDS, REFERRAL_PAYMENT_PROVIDER];
+
 export type PaymentConfig =
   | { ok: true; provider: PaymentProviderId | null } // null = ยังไม่ได้ตั้งค่า
   | { ok: false; provider: null; error: string }; // ค่าที่ไม่รู้จัก หรือ mock ถูกปฏิเสธ

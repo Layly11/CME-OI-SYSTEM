@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { Suspense } from "react";
 import { Container } from "@/components/ui";
 import { getSessionUserOrNull } from "@/lib/auth/dal";
-import { isPackageCode, loginPathForPackage, postRegisterPath } from "@/lib/auth/validation";
+import { isPackageCode, loginPathForPackage, parseReferralCode, postRegisterPath } from "@/lib/auth/validation";
 import { RegisterForm } from "./register-form";
 
 export const metadata: Metadata = { title: "สมัครสมาชิก" };
@@ -56,13 +56,25 @@ export default function RegisterPage(props: PageProps<"/register">) {
   );
 }
 
-/** อ่าน ?package= และ session (runtime API) จึงอยู่ใน <Suspense> — ล็อกอินอยู่แล้วไม่ต้องสมัครซ้ำ */
+/**
+ * อ่าน ?package= ?ref= และ session (runtime API) จึงอยู่ใน <Suspense> — ล็อกอินอยู่แล้วไม่ต้องสมัครซ้ำ
+ * ช่องซ่อนทั้งสองอยู่ในฟอร์มตลอด (URL ไม่เปลี่ยนเมื่อกรอกผิด) แพ็กเกจที่เลือกและรหัสชวนเพื่อนจึงไม่หายระหว่างแก้ฟอร์ม
+ * ?ref= ตรวจแค่รูปแบบที่นี่ และไม่แสดงอะไรให้เห็น: หน้านี้ไม่บอกว่ารหัสมีอยู่จริงหรือไม่ (registerAction ค้นตอนสมัคร)
+ * เพื่อนที่เปิดลิงก์ชวนแล้วไปหน้าอื่นก่อน (แพ็กเกจ / เข้าสู่ระบบ) กลับมาที่นี่โดยไม่มี ?ref= แล้ว: รหัสยังอยู่ใน cookie ที่ src/proxy.ts
+ * ตั้งไว้ตอนเปิดลิงก์ครั้งแรก และ registerAction ใช้ cookie นั้นเมื่อฟอร์มไม่มีรหัส — หน้านี้จึงไม่ต้องส่งต่อ ?ref= ไปกับลิงก์อื่น
+ */
 async function RegisterPackage({ searchParams }: { searchParams: PageProps<"/register">["searchParams"] }) {
   const sp = await searchParams;
   const pkg = isPackageCode(sp.package) ? sp.package : undefined;
+  const ref = parseReferralCode(sp.ref);
   const user = await getSessionUserOrNull();
   if (user) redirect(postRegisterPath(pkg));
-  return pkg ? <input type="hidden" name="package" value={pkg} /> : null;
+  return (
+    <>
+      {pkg ? <input type="hidden" name="package" value={pkg} /> : null}
+      {ref ? <input type="hidden" name="ref" value={ref} /> : null}
+    </>
+  );
 }
 
 function LoginLink({ href }: { href: string }) {

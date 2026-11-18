@@ -9,6 +9,7 @@ import { getPaymentBlock } from "@/lib/license/activation-block";
 import { resolvePaymentConfig } from "@/lib/payment/config";
 import { formatOrderNo, formatThb } from "@/lib/purchase/format";
 import { canPayByCard } from "@/lib/purchase/order-rules";
+import { isFreeReferralPackage } from "@/lib/purchase/packages";
 import { getOrder } from "@/lib/purchase/repo";
 import { MockPayForm } from "./mock-pay-form";
 
@@ -45,6 +46,8 @@ async function MockPayContent({ params }: { params: PageProps<"/account/orders/[
   // getOrder กรองด้วย user.id — คำสั่งซื้อของคนอื่นได้ 404 เหมือนไม่มีอยู่
   const order = await getOrder(user.id, parsedId.data);
   if (!order) notFound();
+  // แพ็กเกจฟรีจากการชวนเพื่อนไม่มีขั้นชำระเงิน — ไม่มีหน้าจำลองการชำระให้คำสั่งซื้อแบบนี้ไม่ว่าสถานะใด
+  if (isFreeReferralPackage({ code: order.packageCode })) notFound();
   const orderPath = `/account/orders/${order.id}`;
   if (order.status === "paid") redirect(orderPath);
   if (!canPayByCard(order.status)) notFound();
@@ -64,7 +67,10 @@ async function MockPayContent({ params }: { params: PageProps<"/account/orders/[
         <Row label="คำสั่งซื้อ">
           <span className="tabular">{formatOrderNo(order.orderNo)}</span>
         </Row>
-        <Row label="แพ็กเกจ">{order.packageName}</Row>
+        <Row label="แพ็กเกจ">
+          {order.packageName}
+          <span className="tabular block text-[13.5px] text-muted">{order.packagePeriod}</span>
+        </Row>
         <Row label="ยอดชำระ">
           <span className="tabular font-semibold text-ink">{formatThb(order.amountThb)}</span>
         </Row>

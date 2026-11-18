@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { faqs, parseLineUrl } from "./site";
+import { faqs, packageCopy, parseLineUrl, referralCopy } from "./site";
 
 const read = (file: string) => readFileSync(path.join(process.cwd(), file), "utf8");
 /** ตัด comment ออก — ตรวจเฉพาะข้อความที่ลูกค้าเห็น */
@@ -77,5 +77,56 @@ describe("ข้อความที่ลูกค้าเห็นตรง�
 
   it("ไม่มีคำการันตีกำไรในข้อความที่เพิ่ม", () => {
     for (const file of pages) expect(visible(read(file)), file).not.toMatch(/การันตี|รวยแน่นอน|win rate/i);
+  });
+});
+
+describe("รายการแพ็กเกจและราคามาจากตาราง packages ที่เดียว", () => {
+  const front = ["src/app/page.tsx", "src/app/pricing/page.tsx"];
+
+  it.each(front)("%s ใช้ <PackageCards> และไม่มีราคา/ชื่อแพ็กเกจฝังในโค้ด", (file) => {
+    const text = visible(read(file));
+    expect(text).toContain("<PackageCards");
+    // ราคา (เช่น "3,000 บาท" / priceThb) และรายการแพ็กเกจชุดเดิมต้องไม่กลับมาอยู่ในหน้า
+    expect(text).not.toMatch(/\d{1,3},\d{3}\s*บาท|priceThb|สอบถามราคา/);
+    expect(text).not.toMatch(/รายเดือน|ตลอดชีพ|packages\.map/);
+  });
+
+  it("src/content/site.ts ไม่มีรายการแพ็กเกจ/ราคาแล้ว — มีแค่คำโปรยตาม code", () => {
+    const text = read("src/content/site.ts");
+    expect(text).not.toMatch(/export const packages\b|priceThb/);
+    for (const [code, copy] of Object.entries(packageCopy)) {
+      expect(code).toMatch(/^[a-z_]+$/);
+      expect(copy.note ?? "", code).not.toMatch(/\d{1,3},\d{3}|บาท/);
+    }
+  });
+
+  it("ข้อความแพ็กเกจและการชวนเพื่อนไม่มีคำการันตีกำไร และไม่สัญญาสิ่งที่ระบบไม่ได้ทำ (สิทธิ์ของเพื่อน, อีเมล)", () => {
+    const all = [
+      ...Object.values(packageCopy).map((c) => c.note ?? ""),
+      referralCopy.title,
+      ...referralCopy.steps,
+      referralCopy.limits,
+      referralCopy.inviteHint,
+      visible(read("src/components/package-cards.tsx")),
+      visible(read("src/app/account/invite-link.tsx")),
+      visible(read("src/app/account/orders/new/order-form.tsx")),
+    ].join(" ");
+    expect(all).not.toMatch(/การันตี|รวยแน่นอน|win rate|กำไร/i);
+    expect(all).not.toMatch(/ทางอีเมล|เพื่อนของคุณจะได้รับ|เพื่อนได้รับ/);
+    // บอกข้อจำกัดของแพ็กเกจฟรีตรงกับที่ระบบบังคับจริง
+    expect(referralCopy.limits).toContain("1 ครั้งต่อผู้ใช้");
+    expect(referralCopy.limits).toContain("1 ครั้งต่อบัญชี MT5");
+  });
+
+  it("ฟอร์มสั่งซื้อใช้ได้ทั้งแพ็กเกจที่ต้องชำระเงินและแพ็กเกจฟรี: ไม่บังคับ \"ชำระเงินก่อน\" และบอกว่าแพ็กเกจฟรีไม่มีขั้นชำระเงิน", () => {
+    const form = visible(read("src/app/account/orders/new/order-form.tsx"));
+    const page = visible(read("src/app/account/orders/new/page.tsx"));
+    for (const text of [form, page]) {
+      expect(text).not.toMatch(/ชำระเงินก่อน|หลังชำระเงิน|แล้วชำระเงินด้วยบัตรในขั้นถัดไป/);
+    }
+    expect(page).toContain("แพ็กเกจฟรีไม่มีขั้นชำระเงิน");
+    expect(form).toContain("บัญชีใหม่ (กรอกเลขบัญชีในหน้าคำสั่งซื้อ)");
+    // ยังชวนเพื่อนไม่ครบ → มีลิงก์จริงไปหน้าบัญชีของฉัน (ที่มีลิงก์ชวนเพื่อน) ไม่ใช่ข้อความเฉยๆ
+    expect(page).toMatch(/need_referral: \{ href: "\/account", label: "[^"]+" \}/);
   });
 });

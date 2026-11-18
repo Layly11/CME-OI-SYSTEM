@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ORDER_STATUSES, type OrderStatus } from "./order-rules";
-import { orderStep, orderStepLabel, type OrderStep } from "./order-progress";
+import { orderBadgeStatus, orderStep, orderStepLabel, type OrderStep } from "./order-progress";
 
 const ACCOUNT = "0b7e1c52-1111-4222-8333-444455556666";
 
@@ -66,5 +66,35 @@ describe("orderStepLabel", () => {
     expect(orderStepLabel("blocked")).toBe("ชำระแล้ว · รอทีมงานตรวจสอบ");
     expect(orderStepLabel("active")).toBe("เปิดใช้งานแล้ว");
     expect(orderStepLabel("closed")).toMatch(/[฀-๿]/);
+  });
+});
+
+describe("orderBadgeStatus", () => {
+  const paid = { status: "paid" as const, freeClaim: false };
+  const free = { status: "paid" as const, freeClaim: true };
+
+  it("ยังไม่ชำระ/ปิดรายการ → สถานะของคำสั่งซื้อ ไม่ว่าเป็นแพ็กเกจฟรีหรือไม่", () => {
+    for (const status of ["pending_payment", "awaiting_review", "rejected", "cancelled", "refunded"] as const) {
+      expect(orderBadgeStatus({ status, freeClaim: false }, null, "pay")).toBe(status);
+      expect(orderBadgeStatus({ status, freeClaim: true }, null, "closed")).toBe(status);
+    }
+  });
+
+  it("ชำระแล้ว → ขั้นของคำสั่งซื้อ; license จบไปแล้ว → สถานะของ license; เปิดใช้งานแล้ว → order_active", () => {
+    expect(orderBadgeStatus(paid, null, "choose_broker")).toBe("choose_broker");
+    expect(orderBadgeStatus(paid, null, "submit_account")).toBe("submit_account");
+    expect(orderBadgeStatus(paid, null, "activating")).toBe("activating");
+    expect(orderBadgeStatus(paid, null, "blocked")).toBe("blocked");
+    expect(orderBadgeStatus(paid, null, "active")).toBe("order_active");
+    expect(orderBadgeStatus(paid, "expired", "active")).toBe("expired");
+    expect(orderBadgeStatus(free, "suspended", "active")).toBe("suspended");
+  });
+
+  it("แพ็กเกจฟรีจากการชวนเพื่อน: ป้ายที่ขึ้นต้นว่า \"ชำระแล้ว\" เปลี่ยนเป็นชุด free_* (\"รับสิทธิ์แล้ว\")", () => {
+    expect(orderBadgeStatus(free, null, "choose_broker")).toBe("free_choose_broker");
+    expect(orderBadgeStatus(free, null, "submit_account")).toBe("free_submit_account");
+    expect(orderBadgeStatus(free, null, "blocked")).toBe("free_blocked");
+    expect(orderBadgeStatus(free, null, "activating")).toBe("activating");
+    expect(orderBadgeStatus(free, null, "active")).toBe("order_active");
   });
 });

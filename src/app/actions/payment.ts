@@ -11,12 +11,14 @@ import { markOrderPaid } from "@/lib/payment/mark-paid";
 import { getPaymentProvider, mockPaymentRef } from "@/lib/payment/provider";
 import { purchaseMessages, purchaseSystemError } from "@/lib/purchase/messages";
 import { canPayByCard } from "@/lib/purchase/order-rules";
+import { isFreeReferralPackage } from "@/lib/purchase/packages";
 import { getOrder } from "@/lib/purchase/repo";
 
 /**
  * Server Actions ของการชำระเงินด้วยบัตร
  * - ทุก action ตรวจ session และความเป็นเจ้าของคำสั่งซื้อเองทุกครั้ง
  * - ไม่มี action ใดอ่านข้อมูลบัตรหรือยอดเงินจากฟอร์ม: ยอดมาจากแถวคำสั่งซื้อ ข้อมูลบัตรกรอกที่ผู้ให้บริการเท่านั้น
+ * - แพ็กเกจฟรีจากการชวนเพื่อนไม่ผ่านขั้นชำระเงิน: ทั้งสอง action ปฏิเสธคำสั่งซื้อแพ็กเกจฟรี (markOrderPaidInTx ปฏิเสธซ้ำอีกชั้น)
  */
 
 type PaymentActionState = FormState<never>;
@@ -49,7 +51,10 @@ export async function startCheckoutAction(orderId: string): Promise<PaymentActio
     const order = await getOrder(user.id, orderId);
     if (!order) return { ok: false, formError: purchaseMessages.order_not_found };
     const orderPath = `/account/orders/${order.id}`;
-    if (!canPayByCard(order.status)) {
+    if (isFreeReferralPackage({ code: order.packageCode })) {
+      // แพ็กเกจฟรีไม่มีขั้นชำระเงิน — กลับหน้าคำสั่งซื้อ (แสดงขั้นถัดไปของสิทธิ์นั้น)
+      redirectUrl = orderPath;
+    } else if (!canPayByCard(order.status)) {
       // แท็บค้าง/กดย้อนกลับ: คำสั่งซื้อชำระไปแล้ว (หรือถูกยกเลิก/รอตรวจสลิป) จากอีกแท็บ
       // คืนแค่ข้อความ หน้าจะไม่ถูก render ใหม่และยังโชว์ "รอชำระ" + ปุ่มชำระค้างอยู่ → redirect ให้หน้าคำสั่งซื้อแสดงสถานะจริง
       redirectUrl = orderPath;
@@ -89,6 +94,8 @@ export async function confirmMockPaymentAction(orderId: string): Promise<Payment
   try {
     const order = await getOrder(user.id, orderId);
     if (!order) return { ok: false, formError: purchaseMessages.order_not_found };
+    // แพ็กเกจฟรีรับการ "ชำระ" แบบจำลองไม่ได้ (สิทธิ์มาจากการชวนเพื่อนเท่านั้น)
+    if (isFreeReferralPackage({ code: order.packageCode })) return { ok: false, formError: purchaseMessages.order_not_payable };
     if (order.status !== "paid") {
       if (!canPayByCard(order.status)) return { ok: false, formError: purchaseMessages.order_not_payable };
       // ตรวจบัญชี MT5 ซ้ำก่อน "รับเงิน" (เหตุผลเดียวกับ startCheckoutAction — หน้าจำลองอาจถูกเปิดค้างไว้)

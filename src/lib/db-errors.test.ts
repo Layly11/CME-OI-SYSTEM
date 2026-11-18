@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isUniqueViolation, safeErrorSummary } from "./db-errors";
+import { isDeadlock, isUniqueViolation, safeErrorSummary } from "./db-errors";
 
 const pgError = (code: string, constraint_name?: string) => Object.assign(new Error("pg"), { code, constraint_name });
 
@@ -34,6 +34,27 @@ describe("isUniqueViolation", () => {
     const a: { cause?: unknown } = {};
     a.cause = a;
     expect(isUniqueViolation(a)).toBe(false);
+  });
+});
+
+describe("isDeadlock", () => {
+  it("40P01 ตรงจาก driver หรือที่ drizzle ห่อไว้ใน cause", () => {
+    expect(isDeadlock(pgError("40P01"))).toBe(true);
+    expect(isDeadlock(new Error("Failed query", { cause: pgError("40P01") }))).toBe(true);
+  });
+
+  it("error อื่นไม่นับ (รวม serialization failure และ unique violation)", () => {
+    expect(isDeadlock(pgError("40001"))).toBe(false);
+    expect(isDeadlock(pgError("23505"))).toBe(false);
+    expect(isDeadlock(new Error("deadlock detected"))).toBe(false);
+    expect(isDeadlock(null)).toBe(false);
+    expect(isDeadlock("40P01")).toBe(false);
+  });
+
+  it("cause วนกลับหาตัวเองก็ไม่ค้าง", () => {
+    const a: { cause?: unknown } = {};
+    a.cause = a;
+    expect(isDeadlock(a)).toBe(false);
   });
 });
 

@@ -10,16 +10,17 @@ import { partnerBrokers } from "@/content/brokers";
 import { LineLink } from "@/components/line-link";
 import { requireUser } from "@/lib/auth/dal";
 import { getActivationBlock, getPaymentBlock } from "@/lib/license/activation-block";
-import { isBankTransferEnabled } from "@/lib/payment/config";
+import { isBankTransferEnabled, REFERRAL_PAYMENT_PROVIDER } from "@/lib/payment/config";
 import { getPaymentProvider } from "@/lib/payment/provider";
 import { findPartnerBroker } from "@/lib/purchase/brokers";
 import { getPaymentInfo, safeExternalUrl } from "@/lib/purchase/config";
 import { activationView } from "@/lib/license/published-state";
 import { getLatestPublishedEntries } from "@/lib/license/publish-sync";
-import { formatOrderNo, formatThaiDate, formatThb, todayInBangkok } from "@/lib/purchase/format";
+import { formatOrderNo, formatThaiDate, todayInBangkok } from "@/lib/purchase/format";
 import { purchaseMessages } from "@/lib/purchase/messages";
-import { orderStep } from "@/lib/purchase/order-progress";
+import { orderBadgeStatus, orderStep } from "@/lib/purchase/order-progress";
 import { canCancelOrder, canUploadSlip, OPEN_ORDER_STATUSES } from "@/lib/purchase/order-rules";
+import { isFreeReferralPackage, orderAmountText } from "@/lib/purchase/packages";
 import { getOrder, listMt5AccountsWithLicense } from "@/lib/purchase/repo";
 import { resolveSlipStorage } from "@/lib/purchase/slip-storage-config";
 import { AttachAccountForm } from "./attach-account-form";
@@ -87,7 +88,11 @@ async function OrderContent({
   // (ลูกค้าเดิมที่กดเลือกโบรกเกอร์ไปก่อนต้องยังใช้เลขเดิมได้: ฟอร์มกรอกเลขใหม่ปฏิเสธเลขที่ตัวเองลงทะเบียนไว้แล้ว)
   const accounts =
     step === "choose_broker" || step === "submit_account" ? await listMt5AccountsWithLicense(user.id) : [];
-  const cancellable = canCancelOrder(order.status);
+  // แพ็กเกจฟรีจากการชวนเพื่อน: ไม่มีขั้นชำระเงิน (รับสิทธิ์ตอนสร้างคำสั่งซื้อ) ข้อความจึงใช้ "รับสิทธิ์" แทน "ชำระเงิน"
+  const freePackage = isFreeReferralPackage({ code: order.packageCode });
+  const freeClaim = order.paymentProvider === REFERRAL_PAYMENT_PROVIDER;
+  // ยกเลิกเองได้: ยังรอชำระ หรือแพ็กเกจฟรีที่ยังไม่ได้เปิด license (ยกเลิก = คืนสิทธิ์) — cancelOrder ตรวจซ้ำ
+  const cancellable = canCancelOrder(order);
   // ก่อนรับเงิน: บัญชี MT5 ที่ผูกไว้ยังรับการเปิด/ต่ออายุได้หรือไม่ (เปลี่ยนได้หลังสร้างคำสั่งซื้อ) — action ตรวจซ้ำ
   const paymentBlock = step === "pay" ? await getPaymentBlock(order) : null;
 
@@ -118,25 +123,31 @@ async function OrderContent({
       <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
         <h1 className="tabular text-[28px] text-ink">คำสั่งซื้อ {formatOrderNo(order.orderNo)}</h1>
         <StatusBadge
-          status={
-            order.status !== "paid"
-              ? order.status
-              : activation.kind === "ended"
-                ? activation.status
-                : step === "active"
-                  ? "order_active"
-                  : step
-          }
+          status={orderBadgeStatus(
+            { status: order.status, freeClaim },
+            activation.kind === "ended" ? activation.status : null,
+            step,
+          )}
         />
       </div>
 
       <dl className="mt-5 divide-y divide-rule rounded-lg border border-rule bg-surface text-[15px]">
-        <Row label="แพ็กเกจ">{order.packageName}</Row>
+        <Row label="แพ็กเกจ">
+          {order.packageName}
+          {/* ก่อนเปิด license: บอกจำนวนวันที่จะได้ (อายุหลัก + วันแถม) ให้ตรงกับหน้าแพ็กเกจ — เปิดแล้วดูวันหมดอายุจริงจากประกาศด้านล่าง */}
+          {order.activatedLicense === null && order.status !== "cancelled" && order.status !== "refunded" ? (
+            <span className="tabular block text-[13.5px] text-muted" data-testid="order-package-period">
+              {order.packagePeriod}
+            </span>
+          ) : null}
+        </Row>
         <Row label="ยอดชำระ">
-          <span className="tabular font-semibold text-ink">{formatThb(order.amountThb)}</span>
+          <span className="tabular font-semibold text-ink">{orderAmountText(order.amountThb)}</span>
         </Row>
         <Row label="วันที่สั่งซื้อ">{formatThaiDate(order.createdAt)}</Row>
-        {order.paidAt ? <Row label="ชำระเงินเมื่อ">{formatThaiDate(order.paidAt)}</Row> : null}
+        {order.paidAt ? (
+          <Row label={freeClaim ? "รับสิทธิ์เมื่อ" : "ชำระเงินเมื่อ"}>{formatThaiDate(order.paidAt)}</Row>
+        ) : null}
         <Row label="บัญชี MT5">
           {order.accountNumber ? (
             <>
@@ -156,7 +167,7 @@ async function OrderContent({
             {reusedNotice === "other-package" ? (
               <>
                 ยังไม่ได้สร้างคำสั่งซื้อใหม่ เพราะบัญชี MT5 นี้มีคำสั่งซื้อที่รอดำเนินการอยู่แล้ว คือรายการนี้ (แพ็กเกจ{" "}
-                {order.packageName} ยอด {formatThb(order.amountThb)}) ซึ่งไม่ใช่แพ็กเกจที่คุณเพิ่งเลือก{" "}
+                {order.packageName} ยอด {orderAmountText(order.amountThb)}) ซึ่งไม่ใช่แพ็กเกจที่คุณเพิ่งเลือก{" "}
                 {cancellable
                   ? "หากต้องการเปลี่ยนแพ็กเกจ ให้ยกเลิกคำสั่งซื้อนี้ด้านล่าง แล้วสั่งซื้อใหม่"
                   : "หากต้องการเปลี่ยนแพ็กเกจ กรุณาติดต่อทีมงานทาง LINE"}
@@ -181,7 +192,17 @@ async function OrderContent({
         </div>
       ) : null}
 
-      {step === "pay" ? (
+      {step === "pay" && freePackage ? (
+        // ปกติไม่เกิด: แพ็กเกจฟรีถูกบันทึกเป็น "รับสิทธิ์แล้ว" ใน transaction เดียวกับการสร้างคำสั่งซื้อ — ไม่มีปุ่มชำระเงินให้รายการแบบนี้เด็ดขาด
+        <div className="mt-6" data-testid="free-order-unclaimed">
+          <Notice tone="warn">
+            คำสั่งซื้อนี้เป็นแพ็กเกจฟรีจากการชวนเพื่อน ไม่มีขั้นชำระเงิน แต่ระบบยังไม่ได้บันทึกสิทธิ์ให้
+            {cancellable ? " ยกเลิกคำสั่งซื้อนี้ด้านล่าง แล้วรับสิทธิ์ใหม่ในหน้าสั่งซื้อ" : null} หรือติดต่อทีมงาน{" "}
+            <LineLink>ทาง LINE</LineLink>
+          </Notice>
+        </div>
+      ) : null}
+      {step === "pay" && !freePackage ? (
         <section className="mt-8">
           <h2 className="text-[20px] text-ink">ชำระเงิน</h2>
           {paymentBlock === null ? (
@@ -223,7 +244,11 @@ async function OrderContent({
 
       {step === "choose_broker" ? (
         <section className="mt-8">
-          <Notice tone="success">ชำระเงินแล้ว ขั้นถัดไป: เลือกโบรกเกอร์ที่จะเปิดบัญชีเทรด</Notice>
+          <Notice tone="success">
+            {freeClaim
+              ? "รับสิทธิ์แพ็กเกจฟรีแล้ว ไม่ต้องชำระเงิน ขั้นถัดไป: เลือกโบรกเกอร์ที่จะเปิดบัญชีเทรด"
+              : "ชำระเงินแล้ว ขั้นถัดไป: เลือกโบรกเกอร์ที่จะเปิดบัญชีเทรด"}
+          </Notice>
           <h2 className="mt-6 text-[20px] text-ink">เลือกโบรกเกอร์</h2>
           <p className="mt-1 text-[14.5px] text-muted">
             เลือก 1 ราย แล้วระบบจะแสดงลิงก์เปิดบัญชีเทรด เปิดบัญชีเสร็จจึงกลับมากรอกเลขบัญชี MT5
@@ -299,7 +324,10 @@ async function OrderContent({
         <div className="mt-6">
           {/* โทนข้อมูล ไม่ใช่ error: เงินและเลขบัญชีบันทึกแล้ว — ไม่มีงานเบื้องหลังที่ลองใหม่เอง จึงไม่สัญญาเวลา บอกสิ่งที่ลูกค้าทำได้ */}
           <Notice>
-            ระบบบันทึกการชำระเงินและเลขบัญชี MT5 ของคุณแล้ว ไม่ต้องชำระซ้ำ แต่การเปิดใช้งาน license ยังไม่เสร็จ กด
+            {freeClaim
+              ? "ระบบบันทึกสิทธิ์แพ็กเกจฟรีและเลขบัญชี MT5 ของคุณแล้ว ไม่ต้องทำรายการใหม่"
+              : "ระบบบันทึกการชำระเงินและเลขบัญชี MT5 ของคุณแล้ว ไม่ต้องชำระซ้ำ"}{" "}
+            แต่การเปิดใช้งาน license ยังไม่เสร็จ กด
             &quot;ตรวจสอบสถานะอีกครั้ง&quot; ด้านล่างเพื่อให้ระบบลองเปิดใช้งานอีกรอบ หากยังไม่สำเร็จ ติดต่อทีมงาน{" "}
             <LineLink>ทาง LINE</LineLink> พร้อมเลขที่คำสั่งซื้อ {formatOrderNo(order.orderNo)}
           </Notice>
@@ -311,9 +339,16 @@ async function OrderContent({
         <div className="mt-6" data-testid="activation-blocked">
           {/* ถูกกัน: กดลองใหม่ไม่ช่วย จึงไม่มีปุ่ม และไม่ใช้คำว่า "กำลังเปิดใช้งาน" */}
           <Notice tone="warn">
-            ชำระเงินแล้ว แต่ระบบเปิดใช้งาน license ให้คำสั่งซื้อนี้โดยอัตโนมัติไม่ได้: {purchaseMessages[activationBlock]}{" "}
-            ไม่ต้องชำระซ้ำ กรุณาติดต่อทีมงาน <LineLink>ทาง LINE</LineLink> พร้อมเลขที่คำสั่งซื้อ{" "}
-            {formatOrderNo(order.orderNo)}
+            {freeClaim ? "รับสิทธิ์แพ็กเกจฟรีแล้ว" : "ชำระเงินแล้ว"} แต่ระบบเปิดใช้งาน license
+            ให้คำสั่งซื้อนี้โดยอัตโนมัติไม่ได้: {purchaseMessages[activationBlock]}{" "}
+            {freeClaim ? (
+              cancellable ? (
+                "ยกเลิกคำสั่งซื้อนี้ด้านล่างเพื่อคืนสิทธิ์ แล้วรับใหม่ได้ หรือ"
+              ) : null
+            ) : (
+              "ไม่ต้องชำระซ้ำ"
+            )}{" "}
+            กรุณาติดต่อทีมงาน <LineLink>ทาง LINE</LineLink> พร้อมเลขที่คำสั่งซื้อ {formatOrderNo(order.orderNo)}
           </Notice>
         </div>
       ) : null}
@@ -377,9 +412,10 @@ async function OrderContent({
       {cancellable ? (
         <section className="mt-10 border-t border-rule pt-6">
           <h2 className="text-[17px] font-semibold text-ink">ยกเลิกคำสั่งซื้อ</h2>
-          <p className="mt-1 text-[14.5px] text-muted">
-            เลือกแพ็กเกจผิดหรือไม่ต้องการแล้ว ยกเลิกได้ตราบที่ยังไม่ได้ชำระเงิน หากชำระเงินไปแล้วอย่ายกเลิก
-            ให้ติดต่อทีมงานทาง LINE
+          <p className="mt-1 text-[14.5px] text-muted" data-testid={freeClaim ? "cancel-free-claim" : undefined}>
+            {freeClaim
+              ? "ยังไม่ได้เปิด license จึงยกเลิกได้ ยกเลิกแล้วสิทธิ์แพ็กเกจฟรีจะกลับมาให้รับใหม่ได้ (เช่น ต้องการใช้กับบัญชี MT5 อื่น) เมื่อเปิด license แล้วจะยกเลิกไม่ได้"
+              : "เลือกแพ็กเกจผิดหรือไม่ต้องการแล้ว ยกเลิกได้ตราบที่ยังไม่ได้ชำระเงิน หากชำระเงินไปแล้วอย่ายกเลิก ให้ติดต่อทีมงานทาง LINE"}
           </p>
           <CancelOrderForm orderId={order.id} />
         </section>

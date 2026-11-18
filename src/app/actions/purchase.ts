@@ -12,7 +12,7 @@ import { firstFieldErrors } from "@/lib/auth/validation";
 import { safeErrorSummary } from "@/lib/db-errors";
 import type { FormState } from "@/lib/form-state";
 import { fulfilOrder } from "@/lib/license/fulfil";
-import { isBankTransferEnabled } from "@/lib/payment/config";
+import { isBankTransferEnabled, REFERRAL_PAYMENT_PROVIDER } from "@/lib/payment/config";
 import { isPartnerBrokerCode } from "@/lib/purchase/brokers";
 import { purchaseMessages, purchaseSystemError } from "@/lib/purchase/messages";
 import { mt5AccountSchema, pickMt5Fields, type Mt5Field } from "@/lib/purchase/mt5";
@@ -198,13 +198,19 @@ export async function createOrderAction(_prev: OrderFormState, formData: FormDat
   try {
     const result = await createOrder(user.id, parsed.data);
     if (!result.ok) {
-      if (result.reason === "package_unavailable") {
-        return { ok: false, fieldErrors: { packageId: purchaseMessages.package_unavailable }, values };
+      if (
+        result.reason === "package_unavailable" ||
+        // แพ็กเกจฟรีจากการชวนเพื่อน: ยังไม่มีเพื่อนสมัคร / ใช้สิทธิ์ไปแล้ว (ฟอร์มปิดตัวเลือกไว้แล้ว — นี่คือคำตอบของคำขอที่สร้างเอง)
+        result.reason === "free_referral_required" ||
+        result.reason === "free_already_claimed"
+      ) {
+        return { ok: false, fieldErrors: { packageId: purchaseMessages[result.reason] }, values };
       }
       if (
         result.reason === "account_not_found" ||
         result.reason === "lifetime_active" ||
-        result.reason === "license_suspended"
+        result.reason === "license_suspended" ||
+        result.reason === "free_account_used"
       ) {
         return { ok: false, fieldErrors: { mt5AccountId: purchaseMessages[result.reason] }, values };
       }
@@ -213,6 +219,9 @@ export async function createOrderAction(_prev: OrderFormState, formData: FormDat
     destination = `/account/orders/${result.id}`;
     // ไม่ได้สร้างรายการใหม่ → หน้าคำสั่งซื้อต้องบอกผู้ใช้ (โดยเฉพาะเมื่อแพ็กเกจไม่ตรงกับที่เพิ่งเลือก)
     if (result.existing) destination += `?notice=${result.samePackage ? "existing" : "other-package"}`;
+    // แพ็กเกจฟรี: คำสั่งซื้อถูกบันทึกเป็น "รับสิทธิ์แล้ว" และ commit แล้ว (ไม่มีขั้นชำระเงิน) → ทำขั้นเปิด license ต่อทันที
+    // มีบัญชี MT5 มาแต่แรกได้ license ตรงนี้ ยังไม่มีบัญชีได้ not_ready เอง (ไปเลือกโบรกเกอร์ต่อ) — fulfilOrder ไม่ throw
+    else if (result.freeClaim) await fulfilOrder(result.id, { trigger: "payment" });
   } catch (err) {
     console.error("[purchase] create order failed:", safeErrorSummary(err));
     return { ok: false, formError: purchaseSystemError, values };
@@ -220,7 +229,10 @@ export async function createOrderAction(_prev: OrderFormState, formData: FormDat
   redirect(destination);
 }
 
-/** ลูกค้ายกเลิกคำสั่งซื้อที่ยังรอชำระของตัวเอง (ใช้กับ useActionState — ไม่อ่าน state เดิมและข้อมูลฟอร์ม) */
+/**
+ * ลูกค้ายกเลิกคำสั่งซื้อของตัวเอง: รายการที่ยังรอชำระ หรือแพ็กเกจฟรีที่รับสิทธิ์แล้วแต่ยังไม่ได้เปิด license (คืนสิทธิ์ให้รับใหม่ได้)
+ * กติกาและการล็อกอยู่ใน cancelOrder — action นี้ไม่ตัดสินเอง (ใช้กับ useActionState — ไม่อ่าน state เดิมและข้อมูลฟอร์ม)
+ */
 export async function cancelOrderAction(orderId: string): Promise<SimpleActionState> {
   const user = await sessionUser();
   if (!user) return { ok: false, formError: purchaseSystemError };
@@ -312,7 +324,11 @@ export async function retryActivationAction(orderId: string): Promise<SimpleActi
     // ซึ่งแสดงสถานะ "ชำระแล้ว แต่เปิดใช้งานอัตโนมัติไม่ได้" พร้อมเหตุผล แทนการต่อข้อความขัดกันใต้ประกาศเดิม
     const blocked = result.activation.status === "blocked";
     const published = result.publish?.status === "published" || result.publish?.status === "unchanged";
-    if (!blocked && !published) return { ok: false, formError: purchaseMessages.activation_pending };
+    if (!blocked && !published) {
+      // แพ็กเกจฟรีจากการชวนเพื่อนไม่มีการชำระเงิน — ข้อความไม่พูดถึง "การชำระเงิน/ไม่ต้องชำระซ้ำ"
+      const freeClaim = order.paymentProvider === REFERRAL_PAYMENT_PROVIDER;
+      return { ok: false, formError: purchaseMessages[freeClaim ? "activation_pending_free" : "activation_pending"] };
+    }
   } catch (err) {
     console.error("[purchase] retry activation failed:", safeErrorSummary(err));
     return { ok: false, formError: purchaseSystemError };

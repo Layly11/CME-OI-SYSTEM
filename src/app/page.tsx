@@ -2,12 +2,12 @@ import Image from "next/image";
 import Link from "next/link";
 import { ChevronDown } from "lucide-react";
 import { Ladder } from "@/components/ladder";
+import { PackageCards } from "@/components/package-cards";
 import { ButtonLink, Container, SectionTitle } from "@/components/ui";
 import {
   facts,
   faqs,
   features,
-  packages,
   screenshots,
   site,
   steps,
@@ -150,17 +150,9 @@ export default function HomePage() {
             title="แพ็กเกจ"
             lead="ทุกแพ็กเกจได้เครื่องมือครบชุดและอัปเดตฟรีตลอดอายุ license ต่างกันที่ระยะเวลา"
           />
-          <div className="mt-10 grid gap-px overflow-hidden rounded-lg border border-rule bg-rule sm:grid-cols-2 lg:grid-cols-4">
-            {packages.map((p) => (
-              <div key={p.code} className={`bg-surface p-6 ${p.highlight ? "bg-gold-soft" : ""}`}>
-                <h3 className="text-[20px] text-ink">{p.name}</h3>
-                <p className="text-[14px] text-muted">{p.period}</p>
-                <p className="tabular mt-5 text-[26px] font-semibold text-ink">
-                  {p.priceThb === null ? "สอบถามราคา" : `${p.priceThb.toLocaleString("th-TH")} บาท`}
-                </p>
-                {p.note ? <p className="mt-2 text-[14px] text-muted">{p.note}</p> : null}
-              </div>
-            ))}
+          {/* รายการและราคาอ่านจากตาราง packages (ตอนมีคำขอ ภายใน <Suspense>) — ส่วนอื่นของหน้ายัง prerender */}
+          <div className="mt-10">
+            <PackageCards variant="home" />
           </div>
           <div className="mt-6 flex flex-wrap items-center gap-4">
             <ButtonLink href="/pricing">ดูรายละเอียดและสมัคร</ButtonLink>

@@ -74,6 +74,10 @@ export function StatusBadge({ status }: { status: string }) {
     activating: { label: "กำลังเปิดใช้งาน", cls: "bg-gold-soft text-gold-deep" },
     // ชำระแล้ว มีบัญชีแล้ว แต่ระบบเปิด license เองไม่ได้ (license ถูกระงับ / ตลอดชีพอยู่แล้ว / ชำระแบบจำลอง)
     blocked: { label: "ชำระแล้ว · รอทีมงานตรวจสอบ", cls: "bg-put/10 text-put" },
+    // แพ็กเกจฟรีจากการชวนเพื่อน: ไม่มีการชำระเงิน ป้ายจึงเป็น "รับสิทธิ์แล้ว" (orderBadgeStatus)
+    free_choose_broker: { label: "รับสิทธิ์แล้ว · รอเลือกโบรกเกอร์", cls: "bg-gold-soft text-gold-deep" },
+    free_submit_account: { label: "รับสิทธิ์แล้ว · รอเลขบัญชี MT5", cls: "bg-gold-soft text-gold-deep" },
+    free_blocked: { label: "รับสิทธิ์แล้ว · รอทีมงานตรวจสอบ", cls: "bg-put/10 text-put" },
     // license ของคำสั่งซื้ออยู่ในรายชื่อที่เผยแพร่แล้ว (ขั้น active ของ orderStep — ใช้ key แยกจากสถานะ license "active")
     order_active: { label: "เปิดใช้งานแล้ว", cls: "bg-call/10 text-call" },
     paid: { label: "ชำระแล้ว", cls: "bg-call/10 text-call" },

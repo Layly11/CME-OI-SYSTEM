@@ -18,8 +18,12 @@ const USER = { id: "11111111-1111-4111-8111-111111111111", email: "c@example.com
 const ORDER = "3f1c2b9a-7d4e-4c1a-9b2f-0a1b2c3d4e5f";
 const ORDER_PATH = `/account/orders/${ORDER}`;
 
-const order = (status: string) =>
-  ({ id: ORDER, orderNo: 1001, amountThb: 9900, packageName: "รายปี", status }) as Awaited<ReturnType<typeof getOrder>>;
+const order = (status: string, over: Record<string, unknown> = {}) =>
+  ({ id: ORDER, orderNo: 1001, amountThb: 9900, packageName: "รายปี", packageCode: "yearly", status, ...over }) as Awaited<
+    ReturnType<typeof getOrder>
+  >;
+/** คำสั่งซื้อแพ็กเกจฟรีจากการชวนเพื่อน — ไม่มีขั้นชำระเงิน */
+const freeOrder = (status: string) => order(status, { amountThb: 0, packageName: "ฟรี 1 เดือน", packageCode: "free_referral" });
 
 /** เรียกแบบที่ useActionState เรียกจริง: มี state เดิมและ FormData ต่อท้าย (action ต้องไม่อ่าน) */
 const callWithForm = (action: (orderId: string) => Promise<unknown>, orderId: string, fd: FormData) =>
@@ -195,4 +199,25 @@ describe("confirmMockPaymentAction", () => {
     vi.mocked(markOrderPaid).mockRejectedValue(new Error("mock refused"));
     expect(await confirmMockPaymentAction(ORDER)).toEqual({ ok: false, formError: purchaseSystemError });
   });
+});
+
+describe("แพ็กเกจฟรีจากการชวนเพื่อนไม่ผ่านขั้นชำระเงิน", () => {
+  it.each(["pending_payment", "rejected", "paid", "cancelled"])(
+    "startCheckoutAction: คำสั่งซื้อแพ็กเกจฟรี (%s) → กลับหน้าคำสั่งซื้อ ไม่ไปหน้าชำระ ไม่ถามผู้ให้บริการ",
+    async (status) => {
+      vi.mocked(getOrder).mockResolvedValue(freeOrder(status));
+      expect(await redirectTarget(() => startCheckoutAction(ORDER))).toBe(ORDER_PATH);
+      expect(getPaymentBlock).not.toHaveBeenCalled();
+      expect(markOrderPaid).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["pending_payment", "rejected", "paid", "cancelled"])(
+    "confirmMockPaymentAction: คำสั่งซื้อแพ็กเกจฟรี (%s) → order_not_payable ไม่บันทึกการชำระจำลอง",
+    async (status) => {
+      vi.mocked(getOrder).mockResolvedValue(freeOrder(status));
+      expect(await confirmMockPaymentAction(ORDER)).toEqual({ ok: false, formError: purchaseMessages.order_not_payable });
+      expect(markOrderPaid).not.toHaveBeenCalled();
+    },
+  );
 });

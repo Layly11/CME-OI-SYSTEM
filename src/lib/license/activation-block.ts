@@ -1,6 +1,7 @@
 import "server-only";
-import { isMockPaymentBlocked } from "@/lib/payment/config";
-import { getAccountLicenseBlock } from "@/lib/purchase/repo";
+import { isMockPaymentBlocked, REFERRAL_PAYMENT_PROVIDER } from "@/lib/payment/config";
+import { isFreeReferralPackage } from "@/lib/purchase/packages";
+import { getAccountLicenseBlock, getFreeClaimBlock } from "@/lib/purchase/repo";
 import type { ActivationBlockReason } from "./activation";
 
 /**
@@ -9,8 +10,10 @@ import type { ActivationBlockReason } from "./activation";
  * ผู้เรียกต้องส่งคำสั่งซื้อที่ตรวจความเป็นเจ้าของแล้ว (getOrder / listOrders)
  */
 type OrderForBlock = {
+  id: string;
   status: string;
   mt5AccountId: string | null;
+  packageCode: string;
   paymentProvider: string | null;
   activatedLicense: unknown | null;
 };
@@ -22,7 +25,17 @@ type OrderForBlock = {
 export async function getActivationBlock(order: OrderForBlock): Promise<ActivationBlockReason | null> {
   if (order.status !== "paid" || order.mt5AccountId === null || order.activatedLicense !== null) return null;
   if (isMockPaymentBlocked(order.paymentProvider, process.env)) return "mock_payment";
-  return getAccountLicenseBlock(order.mt5AccountId);
+  const accountBlock = await getAccountLicenseBlock(order.mt5AccountId);
+  if (accountBlock === "license_suspended") return accountBlock;
+  // แพ็กเกจฟรีจากการชวนเพื่อน: กติกาเดียวกับ activateInTx (สิทธิ์ของคำสั่งซื้อนี้ + เพื่อนที่สมัครแล้ว + บัญชีนี้ยังไม่เคยได้ฟรี)
+  const freePackage = isFreeReferralPackage({ code: order.packageCode });
+  const viaReferral = order.paymentProvider === REFERRAL_PAYMENT_PROVIDER;
+  if (freePackage || viaReferral) {
+    if (!(freePackage && viaReferral)) return "free_claim_invalid";
+    const freeBlock = await getFreeClaimBlock({ id: order.id, mt5AccountId: order.mt5AccountId });
+    if (freeBlock !== null) return freeBlock;
+  }
+  return accountBlock;
 }
 
 /**

@@ -60,3 +60,21 @@ const labels: Record<OrderStep, string> = {
 export function orderStepLabel(step: OrderStep): string {
   return labels[step];
 }
+
+/**
+ * key ของ <StatusBadge> สำหรับคำสั่งซื้อ (ใช้ทั้งหน้าบัญชีและหน้าคำสั่งซื้อ)
+ * - ยังไม่ชำระ/ปิดรายการ → สถานะของคำสั่งซื้อ
+ * - license ของคำสั่งซื้อจบไปแล้ว (หมดอายุ/ถูกระงับ) → สถานะของ license
+ * - แพ็กเกจฟรีจากการชวนเพื่อน (freeClaim) ไม่มีการชำระเงิน: ขั้นที่ป้ายขึ้นต้นว่า "ชำระแล้ว" ใช้ป้าย "รับสิทธิ์แล้ว" แทน (key free_*)
+ */
+export function orderBadgeStatus(
+  o: { status: OrderStatus; freeClaim: boolean },
+  endedLicenseStatus: "expired" | "suspended" | "pending" | null,
+  step: OrderStep,
+): string {
+  if (o.status !== "paid") return o.status;
+  if (endedLicenseStatus !== null) return endedLicenseStatus;
+  if (step === "active") return "order_active";
+  if (o.freeClaim && (step === "choose_broker" || step === "submit_account" || step === "blocked")) return `free_${step}`;
+  return step;
+}

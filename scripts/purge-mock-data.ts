@@ -24,7 +24,7 @@ async function main(): Promise<number> {
   console.log(`  license เดิมที่ถูกต่ออายุด้วยการชำระจำลอง → คืนวันหมดอายุเดิม: ${report.licensesRestored} ใบ`);
   if (report.skippedLicenseIds.length > 0) {
     console.error(
-      `  ข้าม ${report.skippedLicenseIds.length} ใบ: มีการต่ออายุจากการชำระจริงหลังการชำระจำลอง ต้องแก้วันหมดอายุเอง (license id ด้านล่าง)`,
+      `  ข้าม ${report.skippedLicenseIds.length} ใบ: มีการต่ออายุจากรายการจริง (ชำระจริง หรือแพ็กเกจฟรีจากการชวนเพื่อน) หลังการชำระจำลอง ต้องแก้วันหมดอายุเอง (license id ด้านล่าง)`,
     );
     for (const id of report.skippedLicenseIds) console.error(`    ${id}`);
     console.error("  การเผยแพร่ไปรายชื่อ license จริงจะยังถูกปฏิเสธจนกว่าจะจัดการ license เหล่านี้");

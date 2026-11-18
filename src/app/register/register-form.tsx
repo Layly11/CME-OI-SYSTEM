@@ -8,7 +8,7 @@ import { SubmitButton } from "@/components/submit-button";
 
 const initialState: RegisterState = { ok: false };
 
-/** `children` = ช่องซ่อน `package` ที่ server component ส่งเข้ามา (อ่านจาก query ใน <Suspense>) */
+/** `children` = ช่องซ่อน `package` และ `ref` (รหัสชวนเพื่อน) ที่ server component ส่งเข้ามา (อ่านจาก query ใน <Suspense>) */
 export function RegisterForm({ children }: { children?: ReactNode }) {
   const [state, formAction] = useActionState(registerAction, initialState);
   const errors = state.fieldErrors ?? {};

@@ -1,8 +1,8 @@
 "use server";
 
-import { headers } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
-import { RATE_LIMITS } from "@/lib/auth/constants";
+import { RATE_LIMITS, REFERRAL_COOKIE_NAME } from "@/lib/auth/constants";
 import { authMessages } from "@/lib/auth/messages";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { consumeIpRateLimit, consumeRateLimit, pruneRateLimits, resetRateLimit } from "@/lib/auth/rate-limit";
@@ -13,6 +13,7 @@ import { createUser, findUserForLogin, writeAuthAudit } from "@/lib/auth/users";
 import {
   firstFieldErrors,
   loginSchema,
+  parseReferralCode,
   postRegisterPath,
   registerSchema,
   safeNextPath,
@@ -20,6 +21,7 @@ import {
 } from "@/lib/auth/validation";
 import { safeErrorSummary } from "@/lib/db-errors";
 import type { FormState } from "@/lib/form-state";
+import { findReferrerIdByCode } from "@/lib/purchase/referral";
 
 export type RegisterState = FormState<RegisterField>;
 export type LoginState = FormState<"email">;
@@ -76,6 +78,7 @@ export async function registerAction(_prev: RegisterState, formData: FormData): 
       lineId: text(formData, "lineId"),
       accept: text(formData, "accept"),
       package: text(formData, "package"),
+      ref: text(formData, "ref"),
     });
     if (!parsed.success) {
       return { ok: false, fieldErrors: firstFieldErrors<RegisterField>(parsed.error), values };
@@ -86,6 +89,15 @@ export async function registerAction(_prev: RegisterState, formData: FormData): 
     const limit = await consumeIpRateLimit(ip, RATE_LIMITS.registerIp, RATE_LIMITS.registerUnknownIp);
     if (!limit.allowed) return { ok: false, formError: authMessages.rateLimited, values };
 
+    // รหัสชวนเพื่อน (?ref=) — อ่านหลังผ่าน rate limit ทั้งสองด่านเท่านั้น จึงเอาไปไล่เดารหัสถี่ๆ ไม่ได้
+    // และคำตอบไม่บอกว่ารหัสมีอยู่จริงหรือไม่: รหัสผิดรูปแบบ/ไม่มีอยู่จริง = สมัครได้ตามปกติ แค่ไม่มีผู้ชวน
+    // ฟอร์มไม่มีรหัส (เพื่อนเปิดลิงก์ชวนแล้วไปดูหน้าอื่นก่อน กลับมาสมัครด้วย URL ที่ไม่มี ?ref= แล้ว) → ใช้รหัสที่ src/proxy.ts จำไว้ใน cookie
+    // รหัสในฟอร์ม (ลิงก์ที่เพิ่งเปิด) มาก่อน cookie เสมอ และ cookie ผ่านการตรวจรูปแบบเดียวกัน (ผู้ใช้แก้ cookie เองได้ = เท่ากับพิมพ์ ?ref= เอง)
+    // ข้อจำกัดที่รับทราบแล้ว: ยังไม่มีการยืนยันอีเมล "เพื่อน" จึงเป็นบัญชีสมัครทิ้งได้ — ดูหัวไฟล์ src/lib/purchase/referral.ts
+    const cookieStore = await cookies();
+    const refCode = input.ref ?? parseReferralCode(cookieStore.get(REFERRAL_COOKIE_NAME)?.value);
+    const referredByUserId = refCode ? await findReferrerIdByCode(refCode) : null;
+
     const passwordHash = await hashPassword(input.password);
     const user = await createUser({
       email: input.email,
@@ -93,14 +105,17 @@ export async function registerAction(_prev: RegisterState, formData: FormData): 
       name: input.name,
       phone: input.phone,
       lineId: input.lineId,
+      referredByUserId,
     });
     // ความเสี่ยงที่ยอมรับไว้ก่อน (ยังไม่มีระบบส่งอีเมล): คำตอบนี้บอกได้ว่าอีเมลไหนมีบัญชีแล้ว และยังไม่มีการยืนยันอีเมล
     // ใครก็สมัครด้วยอีเมลของคนอื่นได้ — ด่านเดียวตอนนี้คือ rate limit ด้านบน
     // เมื่อเพิ่มอีเมล (Resend) ให้ตอบ "กรุณาตรวจอีเมล" เหมือนกันทั้งสองกรณี และเปิดใช้บัญชีหลังยืนยันอีเมลเท่านั้น
     if (!user) return { ok: false, fieldErrors: { email: authMessages.emailTaken }, values };
 
-    await writeAuthAudit("user.register", user.id);
+    await writeAuthAudit("user.register", user.id, referredByUserId ? { referredByUserId } : undefined);
     await startSession(user.id);
+    // สมัครสำเร็จแล้ว: รหัสที่จำไว้หมดหน้าที่ (ผู้ชวนถูกบันทึกครั้งเดียวตอนสร้างบัญชี) — ลบเพื่อไม่ให้ติดไปกับการสมัครบัญชีถัดไปในเบราว์เซอร์นี้
+    if (cookieStore.has(REFERRAL_COOKIE_NAME)) cookieStore.delete(REFERRAL_COOKIE_NAME);
     destination = postRegisterPath(input.package);
   } catch (err) {
     console.error("[auth] register failed:", safeErrorSummary(err));

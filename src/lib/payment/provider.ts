@@ -41,3 +41,11 @@ export function getPaymentProvider(env: Record<string, string | undefined>): Pay
 export function mockPaymentRef(orderId: string): string {
   return `mock-${orderId}`;
 }
+
+/**
+ * เลขอ้างอิงของการรับแพ็กเกจฟรีจากการชวนเพื่อน — คงที่ต่อคำสั่งซื้อ บันทึกซ้ำจึงเป็นรายการเดิม (idempotent)
+ * (ครั้งเดียวต่อผู้ใช้บังคับด้วย referral_claims.user_id unique ไม่ใช่ด้วยเลขอ้างอิงนี้ — ยกเลิกแล้วรับใหม่ได้เลขใหม่)
+ */
+export function referralPaymentRef(orderId: string): string {
+  return `referral-${orderId}`;
+}

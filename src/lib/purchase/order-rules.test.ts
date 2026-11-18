@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   canAttachAccount,
+  canCancelOrder,
   canChooseBroker,
   canOrderOnline,
   canPayByCard,
@@ -8,6 +9,7 @@ import {
   canUploadSlip,
   createOrderSchema,
   isSlipPaymentMethod,
+  isUnactivatedFreeClaim,
   MAX_MT5_ACCOUNTS_PER_USER,
   MAX_OPEN_ORDERS_PER_USER,
   ORDER_STATUSES,
@@ -17,13 +19,44 @@ const ID = "3f1c2b9a-7d4e-4c1a-9b2f-0a1b2c3d4e5f";
 
 describe("canOrderOnline", () => {
   it.each([
-    [{ isActive: true, priceThb: 1500 }, true],
-    [{ isActive: true, priceThb: null }, false],
-    [{ isActive: true, priceThb: 0 }, false],
-    [{ isActive: true, priceThb: -1 }, false],
-    [{ isActive: false, priceThb: 1500 }, false],
+    [{ isActive: true, priceThb: 1500, code: "yearly" }, true],
+    [{ isActive: true, priceThb: null, code: "yearly" }, false],
+    [{ isActive: true, priceThb: 0, code: "yearly" }, false],
+    [{ isActive: true, priceThb: -1, code: "yearly" }, false],
+    [{ isActive: false, priceThb: 1500, code: "yearly" }, false],
+    // ของฟรีสั่งผ่านเว็บได้เฉพาะแพ็กเกจฟรีจากการชวนเพื่อน และต้องราคา 0 พอดี — แพ็กเกจราคา 0 อื่น (ib) ไม่ได้
+    [{ isActive: true, priceThb: 0, code: "free_referral" }, true],
+    [{ isActive: false, priceThb: 0, code: "free_referral" }, false],
+    [{ isActive: true, priceThb: null, code: "free_referral" }, false],
+    [{ isActive: true, priceThb: 100, code: "free_referral" }, false],
+    [{ isActive: true, priceThb: 0, code: "ib" }, false],
   ])("%j → %s", (pkg, expected) => {
     expect(canOrderOnline(pkg)).toBe(expected);
+  });
+});
+
+describe("canCancelOrder / isUnactivatedFreeClaim", () => {
+  const LICENSE = { status: "active", expiresAt: "2027-01-01" };
+  it("รอชำระ → ยกเลิกได้; ชำระเงินจริง/จำลองแล้ว → ยกเลิกเองไม่ได้ ไม่ว่าเปิด license แล้วหรือยัง", () => {
+    expect(canCancelOrder({ status: "pending_payment", paymentProvider: null, activatedLicense: null })).toBe(true);
+    for (const paymentProvider of ["mock", "gateway-x", null, "Referral", "referral "]) {
+      expect(canCancelOrder({ status: "paid", paymentProvider, activatedLicense: null }), String(paymentProvider)).toBe(false);
+      expect(canCancelOrder({ status: "paid", paymentProvider, activatedLicense: LICENSE }), String(paymentProvider)).toBe(false);
+    }
+  });
+
+  it("แพ็กเกจฟรีจากการชวนเพื่อน: ยกเลิกได้ตราบที่ยังไม่ได้เปิด license เท่านั้น", () => {
+    const free = { status: "paid" as const, paymentProvider: "referral" };
+    expect(isUnactivatedFreeClaim({ ...free, activatedLicense: null })).toBe(true);
+    expect(canCancelOrder({ ...free, activatedLicense: null })).toBe(true);
+    expect(isUnactivatedFreeClaim({ ...free, activatedLicense: LICENSE })).toBe(false);
+    expect(canCancelOrder({ ...free, activatedLicense: LICENSE })).toBe(false);
+  });
+
+  it("สถานะอื่นยกเลิกไม่ได้", () => {
+    for (const status of ["awaiting_review", "rejected", "cancelled", "refunded"] as const) {
+      expect(canCancelOrder({ status, paymentProvider: "referral", activatedLicense: null }), status).toBe(false);
+    }
   });
 });
 

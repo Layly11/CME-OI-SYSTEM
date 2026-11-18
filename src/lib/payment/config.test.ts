@@ -6,7 +6,9 @@ import {
   isBankTransferEnabled,
   isMockPaymentBlocked,
   LIVE_FIREBASE_LICENSE_PATH,
+  PAID_VIA_IDS,
   PAYMENT_PROVIDER_IDS,
+  REFERRAL_PAYMENT_PROVIDER,
   resolvePaymentConfig,
   targetsLiveLicenseList,
 } from "./config";
@@ -188,5 +190,24 @@ describe("ค่าคงที่", () => {
     expect(LIVE_FIREBASE_LICENSE_PATH.startsWith(LICENSE_PATH_PREFIX)).toBe(true);
     expect(LIVE_FIREBASE_LICENSE_PATH).not.toBe(DEFAULT_TEST_LICENSE_PATH);
     expect(PAYMENT_PROVIDER_IDS).toEqual(["mock"]);
+  });
+});
+
+describe("แพ็กเกจฟรีจากการชวนเพื่อน (provider \"referral\") ไม่ใช่การชำระเงินจำลอง", () => {
+  const LIVE_ENV = { LICENSE_STORAGE: "firebase", FIREBASE_LICENSE_PATH: LIVE };
+
+  it("ไม่ถูกด่านของ mock กัน ไม่ว่าค่าตั้งเป็นอย่างไร (ปิดการชำระเงิน / production / รายชื่อจริง)", () => {
+    expect(REFERRAL_PAYMENT_PROVIDER).toBe("referral");
+    for (const env of [{}, { NODE_ENV: "production" }, { PAYMENT_PROVIDER: "mock", NODE_ENV: "test" }, { NODE_ENV: "production", ...LIVE_ENV }]) {
+      expect(isMockPaymentBlocked(REFERRAL_PAYMENT_PROVIDER, env), JSON.stringify(env)).toBe(false);
+      // เทียบ: คำสั่งซื้อจำลองถูกกันทุกค่าตั้งที่ไม่อนุญาต mock
+      expect(isMockPaymentBlocked("mock", env), JSON.stringify(env)).toBe(!(env.PAYMENT_PROVIDER === "mock" && env.NODE_ENV === "test"));
+    }
+  });
+
+  it("ไม่ใช่ผู้ให้บริการรับชำระ: ตั้งผ่าน PAYMENT_PROVIDER ไม่ได้ และไม่อยู่ในรายชื่อ provider ของหน้าชำระเงิน", () => {
+    expect(PAYMENT_PROVIDER_IDS as readonly string[]).not.toContain(REFERRAL_PAYMENT_PROVIDER);
+    expect(resolvePaymentConfig({ PAYMENT_PROVIDER: "referral", NODE_ENV: "development" })).toMatchObject({ ok: false, provider: null });
+    expect([...PAID_VIA_IDS].sort()).toEqual(["mock", "referral"]);
   });
 });

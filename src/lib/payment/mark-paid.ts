@@ -1,12 +1,14 @@
 import "server-only";
-import { and, eq, inArray, sql } from "drizzle-orm";
-import { getDb, schema } from "@/db";
+import { getDb } from "@/db";
 import { isUniqueViolation } from "@/lib/db-errors";
 import { fulfilOrder, type FulfilResult } from "@/lib/license/fulfil";
-import { assertMockPaymentAllowed, PAYMENT_PROVIDER_IDS, type PaymentProviderId } from "./config";
+import type { PaidVia } from "./config";
+import { assertMarkPaidInput, markOrderPaidInTx, type MarkPaidTxResult } from "./mark-paid-tx";
 
 /**
  * จุดเดียวที่เปลี่ยนคำสั่งซื้อเป็น "ชำระแล้ว" — การชำระจำลองเรียกวันนี้ และ webhook ของ gateway จริงจะเรียกตัวเดียวกัน
+ * (ตัวเขียนจริงคือ markOrderPaidInTx ใน ./mark-paid-tx.ts — แพ็กเกจฟรีจากการชวนเพื่อนเรียกตัวนั้นใน transaction ที่สร้างคำสั่งซื้อ
+ * ด้วย provider "referral" ดู createOrder ใน src/lib/purchase/repo.ts)
  *
  * - ไม่มีพารามิเตอร์ยอดเงินโดยตั้งใจ: ยอดคือ orders.amount_thb เท่านั้น
  * - idempotent: เรียกซ้ำด้วย (provider, providerRef) เดิม ไม่เขียนอะไรเพิ่ม (webhook ส่งซ้ำ / ลูกค้ากดซ้ำ / สองคำขอพร้อมกัน)
@@ -31,73 +33,13 @@ export type MarkPaidResult =
     }
   | { ok: false; reason: "order_not_found" | "order_not_payable" | "payment_ref_conflict" };
 
-const PAYABLE = ["pending_payment", "awaiting_review", "rejected"] as const;
-const MAX_PROVIDER_REF_LENGTH = 200;
+export async function markOrderPaid(orderId: string, provider: PaidVia, providerRef: string): Promise<MarkPaidResult> {
+  // ตรวจพารามิเตอร์/ค่าตั้ง mock ก่อนเปิด transaction — เรียกผิดต้อง throw โดยไม่แตะฐานข้อมูล
+  assertMarkPaidInput(provider, providerRef);
 
-export async function markOrderPaid(
-  orderId: string,
-  provider: PaymentProviderId,
-  providerRef: string,
-): Promise<MarkPaidResult> {
-  if (!(PAYMENT_PROVIDER_IDS as readonly string[]).includes(provider)) {
-    throw new Error("markOrderPaid: ไม่รู้จัก provider");
-  }
-  const ref = typeof providerRef === "string" ? providerRef.trim() : "";
-  if (ref.length < 1 || ref.length > MAX_PROVIDER_REF_LENGTH) {
-    throw new Error("markOrderPaid: providerRef ต้องยาว 1–200 ตัวอักษร");
-  }
-  // ด่านสุดท้ายของโหมดจำลอง: ค่าตั้งไม่อนุญาต → throw ก่อนแตะฐานข้อมูล
-  if (provider === "mock") assertMockPaymentAllowed(process.env);
-
-  const db = getDb();
-  type TxResult = { ok: true; orderId: string; alreadyPaid: boolean } | Extract<MarkPaidResult, { ok: false }>;
-  let result: TxResult;
+  let result: MarkPaidTxResult;
   try {
-    result = await db.transaction(async (tx): Promise<TxResult> => {
-      const [order] = await tx
-        .select({
-          id: schema.orders.id,
-          status: schema.orders.status,
-          amountThb: schema.orders.amountThb,
-          paymentProvider: schema.orders.paymentProvider,
-          paymentRef: schema.orders.paymentRef,
-        })
-        .from(schema.orders)
-        .where(eq(schema.orders.id, orderId))
-        .for("update");
-      if (!order) return { ok: false, reason: "order_not_found" };
-
-      const audit = (action: string, data: object) =>
-        tx.insert(schema.auditLogs).values({ actorUserId: null, action, entity: "order", entityId: order.id, data });
-
-      if (order.status === "paid") {
-        // ชำระแล้ว: รายการเดิมซ้ำ → ไม่เขียนอะไร, รายการอื่น → เก็บไว้ให้ตรวจ (อาจถูกตัดเงินสองครั้ง) แต่ไม่แก้คำสั่งซื้อ
-        if (order.paymentProvider !== provider || order.paymentRef !== ref) {
-          await audit("order.payment_duplicate", { provider, providerRef: ref });
-        }
-        return { ok: true, orderId: order.id, alreadyPaid: true };
-      }
-      if (order.status === "cancelled" || order.status === "refunded") {
-        await audit("order.payment_unexpected", { provider, providerRef: ref, status: order.status });
-        return { ok: false, reason: "order_not_payable" };
-      }
-
-      const updated = await tx
-        .update(schema.orders)
-        .set({
-          status: "paid",
-          paidAt: sql`now()`,
-          paymentMethod: "card",
-          paymentProvider: provider,
-          paymentRef: ref,
-        })
-        .where(and(eq(schema.orders.id, order.id), inArray(schema.orders.status, [...PAYABLE])))
-        .returning({ id: schema.orders.id });
-      if (!updated[0]) return { ok: false, reason: "order_not_payable" };
-
-      await audit("order.paid", { provider, providerRef: ref, amountThb: order.amountThb });
-      return { ok: true, orderId: order.id, alreadyPaid: false };
-    });
+    result = await getDb().transaction((tx) => markOrderPaidInTx(tx, orderId, provider, providerRef));
   } catch (err) {
     // เลขอ้างอิงรายการนี้ถูกใช้กับคำสั่งซื้ออื่นไปแล้ว (transaction ถูกยกเลิก คำสั่งซื้อนี้ไม่เปลี่ยน)
     if (isUniqueViolation(err, "orders_payment_ref_idx")) return { ok: false, reason: "payment_ref_conflict" };

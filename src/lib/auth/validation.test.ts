@@ -6,8 +6,10 @@ import {
   loginPathForPackage,
   loginSchema,
   normalizeEmail,
+  parseReferralCode,
   pathWithQuery,
   postRegisterPath,
+  referralInvitePath,
   registerSchema,
   safeNextPath,
 } from "./validation";
@@ -192,8 +194,51 @@ describe("postRegisterPath", () => {
   it("isPackageCode", () => {
     expect(isPackageCode("monthly")).toBe(true);
     expect(isPackageCode("lifetime")).toBe(true);
+    expect(isPackageCode("three_months")).toBe(true);
+    expect(isPackageCode("free_referral")).toBe(true);
     expect(isPackageCode("ib")).toBe(false);
+    expect(isPackageCode("Yearly")).toBe(false);
     expect(isPackageCode(undefined)).toBe(false);
+  });
+
+  it("แพ็กเกจใหม่ที่ต้องจ่ายเงินพาไปหน้าสั่งซื้อได้ทั้งหลังสมัครและหลังล็อกอิน", () => {
+    expect(postRegisterPath("three_months")).toBe("/account/orders/new?package=three_months");
+    expect(loginPathForPackage("three_months")).toBe("/login?next=%2Faccount%2Forders%2Fnew%3Fpackage%3Dthree_months");
+  });
+
+  it("แพ็กเกจฟรีจากการชวนเพื่อน → หน้าบัญชีของฉัน (ที่มีลิงก์ชวนเพื่อน) ไม่ใช่หน้าสั่งซื้อที่ตัวเลือกยังถูกปิด", () => {
+    expect(postRegisterPath("free_referral")).toBe("/account");
+    expect(loginPathForPackage("free_referral")).toBe("/login?next=%2Faccount");
+    expect(safeNextPath(new URL(loginPathForPackage("free_referral"), "http://localhost").searchParams.get("next"))).toBe("/account");
+  });
+});
+
+describe("รหัสชวนเพื่อน", () => {
+  it("parseReferralCode: เลขฐานสิบหก 10 ตัว — รับตัวพิมพ์เล็ก/ช่องว่างหัวท้าย แล้วคืนตัวพิมพ์ใหญ่", () => {
+    expect(parseReferralCode("A1B2C3D4E5")).toBe("A1B2C3D4E5");
+    expect(parseReferralCode(" a1b2c3d4e5\n")).toBe("A1B2C3D4E5");
+    expect(parseReferralCode("0000000000")).toBe("0000000000");
+  });
+
+  it("parseReferralCode: อย่างอื่นทั้งหมด → null (ไม่ throw)", () => {
+    for (const v of [undefined, null, "", "A1B2C3D4E", "A1B2C3D4E5F", "G1B2C3D4E5", "A1B2 C3D4E5", ["A1B2C3D4E5"], 1234567890, "x".repeat(41)]) {
+      expect(parseReferralCode(v), String(v)).toBeNull();
+    }
+  });
+
+  it("referralInvitePath", () => {
+    expect(referralInvitePath("A1B2C3D4E5")).toBe("/register?ref=A1B2C3D4E5");
+  });
+
+  it("registerSchema: ref ผิดรูปแบบถูกทิ้งเงียบๆ ไม่ทำให้ฟอร์มไม่ผ่าน", () => {
+    const base = { name: "ก", email: "a@example.com", password: "ทองคำขึ้นลง2569", accept: "on" };
+    const good = registerSchema.safeParse({ ...base, ref: "a1b2c3d4e5", package: "three_months" });
+    expect(good.success && good.data.ref).toBe("A1B2C3D4E5");
+    expect(good.success && good.data.package).toBe("three_months");
+    for (const ref of ["", "nope", "ZZZZZZZZZZ", undefined]) {
+      const r = registerSchema.safeParse({ ...base, ref });
+      expect(r.success && r.data.ref, String(ref)).toBeUndefined();
+    }
   });
 });
 

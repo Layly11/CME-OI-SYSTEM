@@ -4,15 +4,29 @@ import { Suspense } from "react";
 import { Notice, StatusBadge } from "@/components/form";
 import { LineLink } from "@/components/line-link";
 import { ButtonLink, Container } from "@/components/ui";
+import { referralCopy } from "@/content/site";
 import { requireUser } from "@/lib/auth/dal";
+import { referralInvitePath } from "@/lib/auth/validation";
 import { getActivationBlock } from "@/lib/license/activation-block";
 import { activationView, isLicensePublished } from "@/lib/license/published-state";
 import { getLatestPublishedEntries } from "@/lib/license/publish-sync";
+import { REFERRAL_PAYMENT_PROVIDER } from "@/lib/payment/config";
 import { findPartnerBroker } from "@/lib/purchase/brokers";
-import { formatOrderNo, formatThaiDate, formatThb, licenseView, todayInBangkok } from "@/lib/purchase/format";
-import { orderStep, type OrderStep } from "@/lib/purchase/order-progress";
-import { listMt5AccountsWithLicense, listOrders } from "@/lib/purchase/repo";
+import { siteOriginFromEnv } from "@/lib/purchase/config";
+import { formatOrderNo, formatThaiDate, licenseView, todayInBangkok } from "@/lib/purchase/format";
+import { orderBadgeStatus, orderStep, type OrderStep } from "@/lib/purchase/order-progress";
+import {
+  FREE_REFERRAL_PACKAGE_CODE,
+  freeClaimState,
+  isFreeReferralPackage,
+  orderAmountText,
+  packageDisplayName,
+  referralProgressText,
+} from "@/lib/purchase/packages";
+import { getReferralSummary } from "@/lib/purchase/referral";
+import { listActivePackages, listMt5AccountsWithLicense, listOrders } from "@/lib/purchase/repo";
 import { DeleteMt5AccountButton } from "./delete-mt5-account-button";
+import { InviteLink } from "./invite-link";
 
 export const metadata: Metadata = { title: "บัญชีของฉัน", robots: { index: false, follow: false } };
 
@@ -41,7 +55,15 @@ function AccountSkeleton() {
 /** Member Area — บัญชี MT5 / license / คำสั่งซื้อ ของผู้ใช้ที่ล็อกอินเท่านั้น (ทุก query กรองด้วย user.id) */
 async function AccountContent() {
   const user = await requireUser("/account");
-  const [accounts, orders] = await Promise.all([listMt5AccountsWithLicense(user.id), listOrders(user.id)]);
+  const [accounts, orders, referral, packages] = await Promise.all([
+    listMt5AccountsWithLicense(user.id),
+    listOrders(user.id),
+    getReferralSummary(user.id),
+    listActivePackages(),
+  ]);
+  // แพ็กเกจฟรีจากการชวนเพื่อน (ถ้าเปิดให้รับอยู่) — สถานะสิทธิ์ที่แสดงเป็นแค่การอ่าน ด่านจริงอยู่ที่ createOrder/ขั้นเปิด license
+  const freePackage = packages.find((p) => p.orderable && isFreeReferralPackage(p)) ?? null;
+  const freeState = referral ? freeClaimState(referral) : null;
   // รายชื่อ license ที่เผยแพร่ล่าสุด (สิ่งที่บอทอ่าน) — license ที่ active ในฐานข้อมูลแต่ยังไม่อยู่ในรายชื่อนี้ แสดงเป็น "กำลังเปิดใช้งาน"
   const published = accounts.some((a) => a.license) ? await getLatestPublishedEntries() : new Map<string, string>();
   // เรียกเวลาปัจจุบันหลัง await requireUser เท่านั้น (ไม่อยู่ในส่วนที่ prerender)
@@ -54,15 +76,14 @@ async function AccountContent() {
       const activation = activationView(o.activatedLicense, o.accountNumber, published, today);
       const blocked = (await getActivationBlock(o)) !== null;
       const step = orderStep(o, activation.kind === "none" ? null : { published: activation.kind !== "pending" }, blocked);
-      const badge =
-        o.status !== "paid"
-          ? o.status
-          : activation.kind === "ended"
-            ? activation.status
-            : step === "active"
-              ? "order_active"
-              : step;
-      return { order: o, step, badge };
+      // แพ็กเกจฟรีจากการชวนเพื่อน: ไม่มีการชำระเงิน ข้อความ/ป้ายใช้ "รับสิทธิ์แล้ว" แทน "ชำระแล้ว"
+      const freeClaim = o.paymentProvider === REFERRAL_PAYMENT_PROVIDER;
+      const badge = orderBadgeStatus(
+        { status: o.status, freeClaim },
+        activation.kind === "ended" ? activation.status : null,
+        step,
+      );
+      return { order: o, step, badge, freeClaim };
     }),
   );
   // คำสั่งซื้อที่ชำระแล้วและยังต้องให้ลูกค้าทำต่อ (เลือกโบรกเกอร์ / กรอกเลขบัญชี / กดตรวจสอบสถานะ / ติดต่อทีมงาน)
@@ -102,16 +123,70 @@ async function AccountContent() {
 
       {unfinished.length > 0 ? (
         <div className="mt-6 space-y-3" data-testid="unfinished-orders">
-          {unfinished.map(({ order: o, step }) => (
+          {unfinished.map(({ order: o, step, freeClaim }) => (
             <Notice key={o.id} tone={step === "blocked" ? "warn" : "success"}>
               <span className="tabular font-semibold">คำสั่งซื้อ {formatOrderNo(o.orderNo)}</span> ({o.packageName}):{" "}
-              {nextSteps[step]?.text}{" "}
+              {freeClaim ? nextSteps[step]?.text.replace(/^ชำระแล้ว/, "รับสิทธิ์แพ็กเกจฟรีแล้ว") : nextSteps[step]?.text}{" "}
               <Link href={`/account/orders/${o.id}`} className="font-semibold text-link underline underline-offset-4">
                 {nextSteps[step]?.action}
               </Link>
             </Notice>
           ))}
         </div>
+      ) : null}
+
+      {/* ชวนเพื่อน */}
+      {referral ? (
+        <section className="mt-10 rounded-lg border border-rule bg-surface px-5 py-5" data-testid="referral">
+          <h2 className="text-[20px] text-ink">ชวนเพื่อน</h2>
+          <p className="mt-1 text-[14.5px] text-muted">{referralCopy.inviteHint}</p>
+          <InviteLink
+            path={referralInvitePath(referral.code)}
+            siteOrigin={siteOriginFromEnv(process.env.NEXT_PUBLIC_SITE_URL)}
+          />
+          <p className="mt-1 text-[15px] text-text">
+            เพื่อนที่สมัครผ่านลิงก์ของคุณแล้ว:{" "}
+            <span className="tabular font-semibold text-ink" data-testid="referred-count">
+              {referral.referredCount}
+            </span>{" "}
+            คน
+          </p>
+          {freePackage && freeState ? (
+            <p className="mt-2 text-[14.5px] text-text" data-testid="free-package-status" data-state={freeState}>
+              <span className="font-medium text-ink">แพ็กเกจ{packageDisplayName(freePackage)}:</span>{" "}
+              {freeState === "claimed" ? (
+                "คุณใช้สิทธิ์แล้ว (รับได้ 1 ครั้งต่อผู้ใช้)"
+              ) : freeState === "claim_open" && referral.claim ? (
+                <>
+                  คุณรับสิทธิ์ไว้แล้ว ยังทำขั้นถัดไปไม่เสร็จ{" "}
+                  <Link
+                    href={`/account/orders/${referral.claim.orderId}`}
+                    className="font-semibold text-link underline underline-offset-4"
+                  >
+                    ไปที่คำสั่งซื้อ
+                  </Link>
+                </>
+              ) : freeState === "eligible" ? (
+                <>
+                  {referralProgressText(referral.referredCount)} ครบเงื่อนไขแล้ว{" "}
+                  <Link
+                    href={`/account/orders/new?package=${FREE_REFERRAL_PACKAGE_CODE}`}
+                    className="font-semibold text-link underline underline-offset-4"
+                  >
+                    รับแพ็กเกจฟรี
+                  </Link>{" "}
+                  (ไม่มีขั้นชำระเงิน)
+                </>
+              ) : (
+                <>
+                  {referralProgressText(referral.referredCount)}
+                  {freePackage.description ? ` · เงื่อนไข: ${freePackage.description}` : ""}
+                </>
+              )}
+              <span className="block text-[13.5px] text-muted">{referralCopy.limits}</span>
+            </p>
+          ) : null}
+        </section>
       ) : null}
 
       {/* License */}
@@ -121,7 +196,8 @@ async function AccountContent() {
         <div className="mt-3 rounded-lg border border-rule bg-surface px-5 py-6">
           <p className="text-[15px] text-text">ยังไม่มีบัญชี MT5 ในระบบ</p>
           <p className="mt-1 text-[14px] text-muted">
-            คุณชำระเงินแล้ว ไม่ต้องสั่งซื้อใหม่ ทำขั้นถัดไปของคำสั่งซื้อด้านบนให้เสร็จ บัญชี MT5 และ license
+            {unfinished.every((v) => v.freeClaim) ? "คุณรับสิทธิ์แพ็กเกจฟรีแล้ว" : "คุณชำระเงินแล้ว"} ไม่ต้องสั่งซื้อใหม่
+            ทำขั้นถัดไปของคำสั่งซื้อด้านบนให้เสร็จ บัญชี MT5 และ license
             จะแสดงที่นี่ (ไม่ต้องใส่รหัสผ่าน MT5)
           </p>
         </div>
@@ -255,7 +331,7 @@ async function AccountContent() {
                   <td className="px-4 py-3">{formatThaiDate(o.createdAt)}</td>
                   <td className="px-4 py-3">{o.packageName}</td>
                   <td className="px-4 py-3">{o.accountNumber ?? <span className="text-muted">ยังไม่ระบุ</span>}</td>
-                  <td className="px-4 py-3">{formatThb(o.amountThb)}</td>
+                  <td className="px-4 py-3">{orderAmountText(o.amountThb)}</td>
                   <td className="px-4 py-3">
                     <StatusBadge status={badge} />
                   </td>

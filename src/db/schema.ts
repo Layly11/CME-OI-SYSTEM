@@ -8,6 +8,7 @@
  */
 import { sql } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   check,
   date,
@@ -31,6 +32,9 @@ export const packageCode = pgEnum("package_code", [
   "yearly",
   "lifetime",
   "ib", // สำหรับลูกค้าที่เปิดบัญชีผ่าน IB ของผู้ว่าจ้าง (เงื่อนไขรอยืนยัน)
+  // เพิ่ม 18 พ.ย. 2569 (ต่อท้ายเสมอ — ALTER TYPE ... ADD VALUE): รายการที่ขายจริงดู PACKAGE_LINEUP ใน src/lib/purchase/package-lineup.ts
+  "three_months",
+  "free_referral", // ฟรี 1 เดือน เมื่อชวนเพื่อนสมัครสมาชิก 1 คน — ราคา 0 และรับได้ผ่านเงื่อนไขใน src/lib/purchase/referral.ts เท่านั้น
 ]);
 
 export const orderStatus = pgEnum("order_status", [
@@ -82,10 +86,25 @@ export const users = pgTable(
     lineId: text("line_id"),
     role: userRole("role").notNull().default("customer"),
     termsAcceptedAt: timestamp("terms_accepted_at", { withTimezone: true }),
+    /**
+     * รหัสชวนเพื่อนของผู้ใช้ (ลิงก์ /register?ref=CODE) — ฐานข้อมูลสุ่มให้เองทุกแถว: เลขฐานสิบหกตัวพิมพ์ใหญ่ 10 ตัว (40 บิต)
+     * จาก gen_random_uuid() ผู้ใช้เดิมได้รหัสตอน migrate (ADD COLUMN ... DEFAULT ที่เป็น volatile ถูกคำนวณแยกทุกแถว)
+     * ไม่ใช่ความลับ: รู้รหัสของคนอื่นทำได้แค่สมัครสมาชิกใต้คนนั้น
+     */
+    referralCode: text("referral_code")
+      .notNull()
+      .unique()
+      .default(sql`upper(substr(replace(gen_random_uuid()::text, '-', ''), 1, 10))`),
+    /** ผู้ที่ชวนมาสมัคร — ตั้งได้ครั้งเดียวตอนสร้างแถว (createUser) ไม่มีโค้ดส่วนใดแก้ค่านี้ภายหลัง */
+    referredByUserId: uuid("referred_by_user_id").references((): AnyPgColumn => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [check("users_email_lowercase", sql`${t.email} = lower(${t.email})`)],
+  (t) => [
+    check("users_email_lowercase", sql`${t.email} = lower(${t.email})`),
+    check("users_not_self_referred", sql`${t.referredByUserId} is null or ${t.referredByUserId} <> ${t.id}`),
+    index("users_referred_by_idx").on(t.referredByUserId),
+  ],
 );
 
 /** session ล็อกอินเว็บ — เก็บเฉพาะ SHA-256 ของ token (ตัว token จริงอยู่ใน cookie ของผู้ใช้เท่านั้น) */
@@ -147,17 +166,23 @@ export const mt5Accounts = pgTable(
   ],
 );
 
-export const packages = pgTable("packages", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  code: packageCode("code").notNull().unique(),
-  nameTh: text("name_th").notNull(),
-  description: text("description"),
-  durationDays: integer("duration_days"), // null = ตลอดชีพ
-  priceThb: integer("price_thb"), // null = ยังไม่กำหนดราคา (แสดง "สอบถามราคา")
-  maxAccounts: integer("max_accounts").notNull().default(1), // จำนวนบัญชี MT5 ต่อ 1 license
-  isActive: boolean("is_active").notNull().default(true),
-  sortOrder: integer("sort_order").notNull().default(0),
-});
+export const packages = pgTable(
+  "packages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    code: packageCode("code").notNull().unique(),
+    nameTh: text("name_th").notNull(),
+    description: text("description"), // แพ็กเกจฟรี: เงื่อนไขการรับสิทธิ์ที่แสดงให้ลูกค้า
+    durationDays: integer("duration_days"), // อายุหลัก (ไม่รวมวันแถม) — null = ตลอดชีพ
+    /** วันแถม: license ที่เปิดได้อายุ duration_days + bonus_days (ดู packageTotalDays) — ไม่มีผลกับแพ็กเกจตลอดชีพ */
+    bonusDays: integer("bonus_days").notNull().default(0),
+    priceThb: integer("price_thb"), // null = ยังไม่กำหนดราคา (แสดง "สอบถามราคา")
+    maxAccounts: integer("max_accounts").notNull().default(1), // จำนวนบัญชี MT5 ต่อ 1 license
+    isActive: boolean("is_active").notNull().default(true), // false = เลิกขาย (ห้ามลบแถว: คำสั่งซื้อ/license เดิมอ้างอยู่)
+    sortOrder: integer("sort_order").notNull().default(0),
+  },
+  (t) => [check("packages_bonus_days_nonnegative", sql`${t.bonusDays} >= 0`)],
+);
 
 export const orders = pgTable(
   "orders",
@@ -186,7 +211,10 @@ export const orders = pgTable(
     reviewedBy: uuid("reviewed_by").references(() => users.id),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
     paidAt: timestamp("paid_at", { withTimezone: true }),
-    /** ผู้ให้บริการรับชำระ (เช่น "mock") + เลขอ้างอิงรายการของผู้ให้บริการ — ไม่เก็บข้อมูลบัตรใดๆ */
+    /**
+     * ผู้ให้บริการรับชำระ (เช่น "mock") + เลขอ้างอิงรายการของผู้ให้บริการ — ไม่เก็บข้อมูลบัตรใดๆ
+     * "referral" = แพ็กเกจฟรีจากการชวนเพื่อน (ยอด 0 บาท ไม่ผ่านขั้นชำระเงิน) เป็นคำสั่งซื้อจริง ไม่ใช่การชำระเงินจำลอง
+     */
     paymentProvider: text("payment_provider"),
     paymentRef: text("payment_ref"),
     /** โบรกเกอร์ที่ลูกค้าเลือกหลังชำระเงิน (code จาก src/content/brokers.ts) — คัดลอกไปที่ mt5_accounts ตอนกรอกเลขบัญชี */
@@ -260,12 +288,43 @@ export const licenseActivations = pgTable(
     packageId: uuid("package_id")
       .notNull()
       .references(() => packages.id),
-    durationDays: integer("duration_days"), // null = ตลอดชีพ
+    durationDays: integer("duration_days"), // จำนวนวันที่ให้จริง = อายุหลัก + วันแถม ณ ตอนเปิด; null = ตลอดชีพ
     previousExpiresAt: date("previous_expires_at"),
     newExpiresAt: date("new_expires_at").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("license_activations_license_idx").on(t.licenseId)],
+);
+
+/**
+ * สิทธิ์แพ็กเกจฟรีจากการชวนเพื่อน (packages.code = 'free_referral') — ฐานข้อมูลเป็นตัวบังคับ "ครั้งเดียว":
+ * - user_id unique        ผู้ใช้ 1 คนถือสิทธิ์ได้ครั้งละ 1 แถว = รับได้ครั้งเดียว
+ * - mt5_account_id unique  บัญชี MT5 1 บัญชีรับแพ็กเกจฟรีได้ครั้งเดียว (ตั้งค่าตอนเปิด license พร้อม activated_at)
+ * แถวถูกสร้างพร้อมคำสั่งซื้อ (createOrder) และถูกลบทางเดียว: ลูกค้ายกเลิกคำสั่งซื้อนั้น "ก่อน" เปิด license (cancelOrder)
+ * = คืนสิทธิ์ให้รับใหม่ได้ เมื่อเปิด license แล้ว (activated_at ไม่ว่าง) แถวอยู่ถาวร = ใช้สิทธิ์แล้ว
+ */
+export const referralClaims = pgTable(
+  "referral_claims",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id)
+      .unique(),
+    orderId: uuid("order_id")
+      .notNull()
+      .references(() => orders.id)
+      .unique(),
+    mt5AccountId: uuid("mt5_account_id")
+      .references(() => mt5Accounts.id)
+      .unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    activatedAt: timestamp("activated_at", { withTimezone: true }),
+  },
+  (t) => [
+    // บัญชี MT5 ถูกบันทึกเฉพาะตอนเปิด license (แถวบัญชีที่มี license ลบไม่ได้ จึงไม่มีทางปล่อยเลขแล้วรับซ้ำ)
+    check("referral_claims_activation_consistent", sql`(${t.mt5AccountId} is null) = (${t.activatedAt} is null)`),
+  ],
 );
 
 /** สำเนาไฟล์ license ทุกครั้งที่เผยแพร่ ใช้ย้อนกลับได้ถ้าไฟล์ใหม่มีปัญหา */
@@ -307,5 +366,6 @@ export type Package = typeof packages.$inferSelect;
 export type Order = typeof orders.$inferSelect;
 export type License = typeof licenses.$inferSelect;
 export type LicenseActivation = typeof licenseActivations.$inferSelect;
+export type ReferralClaim = typeof referralClaims.$inferSelect;
 export type LicenseFilePublication = typeof licenseFilePublications.$inferSelect;
 export type DownloadAsset = typeof downloadAssets.$inferSelect;

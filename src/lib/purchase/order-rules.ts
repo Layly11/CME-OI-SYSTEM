@@ -18,10 +18,8 @@ export const OPEN_ORDER_STATUSES: readonly OrderStatus[] = ["pending_payment", "
 export const MAX_MT5_ACCOUNTS_PER_USER = 10;
 export const MAX_OPEN_ORDERS_PER_USER = 5;
 
-/** สั่งซื้อออนไลน์ได้เฉพาะแพ็กเกจที่เปิดขายและมีราคามากกว่า 0 (null = "สอบถามราคา") */
-export function canOrderOnline(pkg: { isActive: boolean; priceThb: number | null }): boolean {
-  return pkg.isActive && pkg.priceThb !== null && pkg.priceThb > 0;
-}
+/** สั่งซื้อออนไลน์ได้หรือไม่ — กติกาอยู่ใน ./packages (แพ็กเกจทั่วไปต้องมีราคามากกว่า 0, แพ็กเกจฟรีจากการชวนเพื่อนต้องราคา 0) */
+export { canOrderOnline } from "./packages";
 
 /** แนบสลิปได้ตอนรอชำระ หรือถูกปฏิเสธ (แนบใหม่) — ใช้เฉพาะเมื่อเปิดช่องทางโอนเงิน (PAYMENT_BANK_TRANSFER_ENABLED) */
 export function canUploadSlip(status: OrderStatus): boolean {
@@ -64,9 +62,28 @@ export function canAttachAccount(order: { mt5AccountId: string | null; status: O
   );
 }
 
-/** ลูกค้ายกเลิกเองได้เฉพาะตอนยังรอชำระ — ชำระแล้ว (หรือแนบสลิปแล้ว) มีเงินเกี่ยวข้อง ต้องผ่านทีมงาน */
-export function canCancelOrder(status: OrderStatus): boolean {
-  return status === "pending_payment";
+/**
+ * คำสั่งซื้อแพ็กเกจฟรีจากการชวนเพื่อนที่ "รับสิทธิ์แล้วแต่ยังไม่ได้เปิด license" — ไม่มีเงินเกี่ยวข้อง ลูกค้ายกเลิกเองได้
+ * (ยกเลิก = คืนสิทธิ์ให้รับใหม่ได้) เปิด license แล้วยกเลิกไม่ได้: สิทธิ์ถูกใช้ไปแล้ว
+ * ค่า "referral" ตรงกับ REFERRAL_PAYMENT_PROVIDER ใน src/lib/payment/config.ts
+ */
+export function isUnactivatedFreeClaim(o: {
+  status: OrderStatus;
+  paymentProvider: string | null;
+  activatedLicense: unknown | null;
+}): boolean {
+  return o.status === "paid" && o.paymentProvider === "referral" && o.activatedLicense === null;
+}
+/**
+ * ลูกค้ายกเลิกเองได้ตอนยังรอชำระ — ชำระแล้ว (หรือแนบสลิปแล้ว) มีเงินเกี่ยวข้อง ต้องผ่านทีมงาน
+ * ข้อยกเว้นเดียว: แพ็กเกจฟรีที่ยังไม่ได้เปิด license (isUnactivatedFreeClaim)
+ */
+export function canCancelOrder(o: {
+  status: OrderStatus;
+  paymentProvider: string | null;
+  activatedLicense: unknown | null;
+}): boolean {
+  return o.status === "pending_payment" || isUnactivatedFreeClaim(o);
 }
 
 /**
